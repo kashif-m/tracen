@@ -1,0 +1,22 @@
+[package]
+name = "tracen_ir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+description.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "generate_ts"
+path = "src/bin/generate_ts.rs"
+
+[dependencies]
+blake3.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_repr.workspace = true

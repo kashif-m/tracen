@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tracen",
+    "crates/tracen_dsl",
+    "crates/tracen_ir",
+    "crates/tracen_engine",
+    "crates/tracen_eval",
+    "crates/tracen_catalog",
+    "crates/tracen_ffi_core",
+    "crates/tracen_ffi",
+    "crates/tracen_analytics",
+    "crates/tracen_export",
+    "crates/tracen_pack_codegen",
+    "crates/tracen_pack",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.79"
+license = "MIT"
+readme = "README.md"
+description = "Tracen: generic DSL/IR/runtime/codegen core for event-based trackers."
+repository = "https://github.com/kashif-m/wrkt"
+keywords = ["tracking", "dsl", "analytics", "ffi"]
+categories = ["development-tools", "parser-implementations"]
+
+[workspace.dependencies]
+blake3 = "1"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_repr = "0.1"
+thiserror = "1"
+time = { version = "0.3", features = ["macros"] }
+
+tracen = { version = "0.1.0", path = "crates/tracen" }
+tracen_analytics = { version = "0.1.0", path = "crates/tracen_analytics" }
+tracen_catalog = { version = "0.1.0", path = "crates/tracen_catalog" }
+tracen_dsl = { version = "0.1.0", path = "crates/tracen_dsl" }
+tracen_engine = { version = "0.1.0", path = "crates/tracen_engine" }
+tracen_eval = { version = "0.1.0", path = "crates/tracen_eval" }
+tracen_export = { version = "0.1.0", path = "crates/tracen_export" }
+tracen_ffi = { version = "0.1.0", path = "crates/tracen_ffi" }
+tracen_ffi_core = { version = "0.1.0", path = "crates/tracen_ffi_core" }
+tracen_ir = { version = "0.1.0", path = "crates/tracen_ir" }
+tracen_pack = { version = "0.1.0", path = "crates/tracen_pack" }
+tracen_pack_codegen = { version = "0.1.0", path = "crates/tracen_pack_codegen" }

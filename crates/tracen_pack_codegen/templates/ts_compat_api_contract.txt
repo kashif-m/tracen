@@ -1,0 +1,132 @@
+// AUTO-GENERATED from {{tracker_name}} pack API. Do not edit.
+
+import type { {{tracker_type}}ViewMetricKey } from './{{compat_dsl_contract_module}}';
+
+{{#each api_types}}
+{{#if is_object}}
+export interface {{name}} {
+{{#each fields}}
+  {{name}}{{#if optional}}?{{/if}}: {{{rendered_ts_type}}};
+{{/each}}
+}
+
+{{/if}}
+{{#if is_enum}}
+export type {{name}} =
+{{#each variants}}
+  | '{{value}}'{{#if @last}};{{/if}}
+{{/each}}
+
+{{/if}}
+{{#if is_alias}}
+export type {{name}} = {{{target}}};
+
+{{/if}}
+{{/each}}
+{{#each views}}
+export type {{metric_type_name}} = {{../tracker_type}}ViewMetricKey<'{{name}}'>;
+{{#if group_by_keys.[0]}}
+export type {{group_by_type_name}} =
+{{#each group_by_keys}}
+  | '{{this}}'{{#if @last}};{{/if}}
+{{/each}}
+{{/if}}
+
+export interface {{query_type}} {
+  metric: {{metric_type_name}};
+{{#if group_by_keys.[0]}}
+  group_by: {{group_by_type_name}};
+{{/if}}
+{{#if query_filter_field}}
+  {{query_filter_field}}: {{query_filter_type}};
+{{else}}
+{{#each filters}}
+  {{key}}{{#if optional}}?{{/if}}: {{{rendered_ts_type}}};
+{{/each}}
+{{/if}}
+}
+
+export interface {{pack_query_type}} {
+  view: '{{name}}';
+  metric: {{metric_type_name}};
+{{#if group_by_keys.[0]}}
+  group_by: {{group_by_type_name}};
+{{/if}}
+{{#each filters}}
+  {{key}}{{#if optional}}?{{/if}}: {{{rendered_ts_type}}};
+{{/each}}
+}
+
+{{#if totals_type}}
+{{#if totals_fields.[0]}}
+export interface {{totals_type}} {
+{{#each totals_fields}}
+  {{name}}: {{{rendered_ts_type}}};
+{{/each}}
+}
+{{/if}}
+{{/if}}
+
+{{#if is_metric_series}}
+export interface {{response_type}} {
+  metric: {{metric_type_name}};
+  group_by: {{group_by_type_name}};
+  points: {{#if point_type}}{{point_type}}[]{{else}}PackMetricPoint[]{{/if}};
+{{#each response_fields}}
+  {{name}}: string;
+{{/each}}
+}
+{{/if}}
+{{#if is_distribution}}
+export interface {{response_type}} {
+  metric: {{metric_type_name}};
+  group_by: {{group_by_type_name}};
+  items: DistributionItem[];
+  totals: {{#if totals_type}}{{totals_type}}{{else}}Record<string, number | null | undefined>{{/if}};
+  qa_unmapped_events?: number;
+}
+{{/if}}
+{{/each}}
+{{#each read_models}}
+{{#if params.[0]}}
+export interface {{query_type}} {
+{{#each params}}
+  {{name}}{{#if optional}}?{{/if}}: {{{rendered_ts_type}}};
+{{/each}}
+}
+{{else}}
+export interface {{query_type}} {
+}
+{{/if}}
+
+export interface {{pack_query_type}} {
+  read_model: '{{name}}';
+{{#each params}}
+  {{name}}{{#if optional}}?{{/if}}: {{{rendered_ts_type}}};
+{{/each}}
+}
+
+export interface {{response_type}} {
+{{#each fields}}
+  {{name}}{{#if optional}}?{{/if}}: {{{rendered_ts_type}}};
+{{/each}}
+}
+{{/each}}
+
+export type {{tracker_type}}PackQuery =
+{{#each views}}
+  | {{pack_query_type}}
+{{/each}}
+{{#each read_models}}
+  | {{pack_query_type}}
+{{/each}}
+;
+
+export type {{tracker_type}}PackResult =
+{{#each views}}
+  | {{response_type}}
+{{/each}}
+{{#each read_models}}
+  | {{response_type}}
+{{/each}}
+;

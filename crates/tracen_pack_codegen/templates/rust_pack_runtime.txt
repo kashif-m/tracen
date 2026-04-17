@@ -1,0 +1,261 @@
+// Auto-generated pack runtime for {{tracker_name}}.
+// Generated from DSL version {{version}}.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::sync::{Arc, OnceLock};
+
+pub const {{tracker_const}}_TRACKER_DSL: &str = r#"{{{dsl}}}"#;
+pub const {{tracker_const}}_TRACKER_JSON: &str = r#"{{{tracker_json}}}"#;
+pub const {{tracker_const}}_VIEW_METRICS_JSON: &str = r#"{{{view_metrics_json}}}"#;
+pub const {{tracker_const}}_VIEW_DEFAULT_METRICS_JSON: &str = r#"{{{view_default_metrics_json}}}"#;
+pub const {{tracker_const}}_VIEW_METRIC_CONFIG_JSON: &str = r#"{{{view_metric_config_json}}}"#;
+pub const {{tracker_const}}_CAPABILITIES_JSON: &str = r#"{{{capabilities_json}}}"#;
+
+{{#each base_catalog_sources}}
+{{#if has_json}}
+pub const {{json_const}}: &str = r#"{{{json}}}"#;
+{{/if}}
+{{/each}}
+
+pub const {{tracker_const}}_METRIC_NAMES: &[&str] = &[
+{{#each metric_names}}
+    "{{this}}",
+{{/each}}
+];
+
+{{#each rust_types}}
+{{#if emit_rust}}
+{{#if is_object}}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct {{name}} {
+{{#each fields}}
+    pub {{name}}: {{#if optional}}Option<{{{rust_type}}}>{{else}}{{{rust_type}}}{{/if}},
+{{/each}}
+}
+
+{{/if}}
+{{#if is_enum}}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum {{name}} {
+{{#each variants}}
+    {{rust_ident}},
+{{/each}}
+}
+
+{{/if}}
+{{#if is_alias}}
+pub type {{name}} = {{{rust_target}}};
+
+{{/if}}
+{{/if}}
+{{/each}}
+
+{{#each read_models}}
+{{#if emit_rust_response_struct}}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct {{response_rust_type}} {
+{{#each fields}}
+    pub {{name}}: {{#if optional}}Option<{{{rust_type}}}>{{else}}{{{rust_type}}}{{/if}},
+{{/each}}
+}
+
+{{/if}}
+{{/each}}
+
+{{#each catalog_entries}}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct {{compat_base_type}} {
+{{#each fields}}
+    pub {{name}}: {{#if optional}}Option<{{{rust_type}}}>{{else}}{{{rust_type}}}{{/if}},
+{{/each}}
+}
+
+{{/each}}
+pub trait {{helper_trait_name}} {
+{{#each helpers}}
+    fn {{rust_method_name}}(
+        &self,
+{{#each params}}
+        {{name}}: {{#if optional}}Option<{{{rust_type}}}>{{else}}{{{rust_type}}}{{/if}},
+{{/each}}
+    ) -> {{#if fallible}}Result<{{{rust_return_type}}}, String>{{else}}{{{rust_return_type}}}{{/if}};
+{{/each}}
+{{#each imports}}
+    fn {{rust_method_name}}(
+        &self,
+{{#each params}}
+        {{name}}: {{#if optional}}Option<{{{rust_type}}}>{{else}}{{{rust_type}}}{{/if}},
+{{/each}}
+    ) -> {{#if fallible}}Result<{{{rust_return_type}}}, String>{{else}}{{{rust_return_type}}}{{/if}};
+{{/each}}
+{{#each read_models}}
+    fn {{rust_method_name}}(
+        &self,
+        events: &[tracen_pack::PackInputEvent],
+        offset_minutes: i32,
+        catalog_json: &Value,
+{{#each params}}
+        {{name}}: {{#if optional}}Option<{{{rust_type}}}>{{else}}{{{rust_type}}}{{/if}},
+{{/each}}
+    ) -> Result<{{response_rust_type}}, String>;
+{{/each}}
+}
+
+pub struct {{generated_adapter_type_name}}<H> {
+    helpers: H,
+}
+
+impl<H> {{generated_adapter_type_name}}<H> {
+    pub fn new(helpers: H) -> Self {
+        Self { helpers }
+    }
+
+    pub fn helpers(&self) -> &H {
+        &self.helpers
+    }
+}
+
+impl<H> {{generated_adapter_type_name}}<H>
+where
+    H: {{helper_trait_name}},
+{
+    pub fn import_by_name(&self, import_name: &str, args: &[Value]) -> Result<Value, String> {
+        match import_name {
+{{#each imports}}
+            "{{name}}" => {
+{{#if params.[0]}}
+                if args.len() != {{param_count}} {
+                    return Err(format!("import '{}' expected {} args, got {}", import_name, {{param_count}}, args.len()));
+                }
+{{#each params}}
+                let {{name}}: {{#if optional}}Option<{{{rust_type}}}>{{else}}{{{rust_type}}}{{/if}} = serde_json::from_value(args[{{@index}}].clone())
+                    .map_err(|err| format!("import '{{../name}}' arg '{{name}}': {err}"))?;
+{{/each}}
+{{/if}}
+                let value = self.helpers.{{rust_method_name}}(
+{{#each params}}
+                    {{name}},
+{{/each}}
+                )?;
+                serde_json::to_value(value).map_err(|err| err.to_string())
+            }
+{{/each}}
+            other => Err(format!("unknown import helper: {other}")),
+        }
+    }
+}
+
+impl<H> tracen_pack::PackExecutionAdapter for {{generated_adapter_type_name}}<H>
+where
+    H: {{helper_trait_name}},
+{
+    fn base_catalog(&self) -> Result<Value, String> {
+        let catalogs: Vec<Value> = vec![
+{{#each base_catalog_sources}}
+{{#if has_json}}
+            serde_json::from_str({{json_const}}).map_err(|err| err.to_string())?,
+{{/if}}
+{{/each}}
+        ];
+        match catalogs.as_slice() {
+            [] => Ok(Value::Array(Vec::new())),
+            [catalog] => Ok(catalog.clone()),
+            _ => Err("generated pack error: multiple base catalog sources are not yet supported by pack_base_catalog".to_string()),
+        }
+    }
+
+    fn validate_catalog_entry(&self, entry_type: &str, entry_json: &str) -> Result<Value, String> {
+        match entry_type {
+{{#each catalog_entries}}
+            "{{name}}" => {
+                let entry: {{compat_base_type}} = serde_json::from_str(entry_json).map_err(|err| err.to_string())?;
+{{#if validate_helper_method}}
+                let entry = self.helpers.{{validate_helper_method}}(entry)?;
+                serde_json::to_value(entry).map_err(|err| err.to_string())
+{{else}}
+                serde_json::to_value(entry).map_err(|err| err.to_string())
+{{/if}}
+            }
+{{/each}}
+            other => Err(format!("unknown catalog entry type: {other}")),
+        }
+    }
+
+    fn execute(
+        &self,
+        _definition: &tracen_ir::TrackerDefinition,
+        _events: &[tracen_pack::PackInputEvent],
+        _offset_minutes: i32,
+        _catalog_json: &Value,
+        _plan: &tracen_pack::PackExecutionPlan,
+    ) -> Result<Value, String> {
+        Err("adapter execution removed: tracen_pack runtime owns query execution".to_string())
+    }
+
+    fn execute_read_model(
+        &self,
+        _definition: &tracen_ir::TrackerDefinition,
+        events: &[tracen_pack::PackInputEvent],
+        offset_minutes: i32,
+        catalog_json: &Value,
+        query: &tracen_pack::ReadModelQueryPlan,
+    ) -> Result<Value, String> {
+        match query.read_model_name.as_str() {
+{{#each read_models}}
+            "{{name}}" => {
+{{#each params}}
+                let {{name}}: {{#if optional}}Option<{{{rust_type}}}>{{else}}{{{rust_type}}}{{/if}} = match query.params.get("{{name}}") {
+                    Some(value) => Some(serde_json::from_value(value.clone()).map_err(|err| format!("read_model '{{../name}}' param '{{name}}': {err}"))?),
+                    None => None,
+                }{{#unless optional}}.ok_or_else(|| format!("read_model '{}' requires {{name}}", query.read_model_name))?{{/unless}};
+{{/each}}
+                let value = self.helpers.{{rust_method_name}}(
+                    events,
+                    offset_minutes,
+                    catalog_json,
+{{#each params}}
+                    {{name}},
+{{/each}}
+                )?;
+                serde_json::to_value(value).map_err(|err| err.to_string())
+            }
+{{/each}}
+            other => Err(format!("unknown read_model: {other}")),
+        }
+    }
+}
+
+fn cached_{{tracker_fn}}_compiled_pack() -> &'static Arc<tracen_pack::CompiledPack> {
+    static COMPILED: OnceLock<Arc<tracen_pack::CompiledPack>> = OnceLock::new();
+    COMPILED.get_or_init(|| {
+        let definition: tracen_ir::TrackerDefinition = serde_json::from_str({{tracker_const}}_TRACKER_JSON)
+            .expect("generated tracker JSON must deserialize");
+        let capabilities: Value = serde_json::from_str({{tracker_const}}_CAPABILITIES_JSON)
+            .expect("generated tracker capabilities JSON must deserialize");
+        Arc::new(tracen_pack::CompiledPack::from_precomputed(definition, capabilities))
+    })
+}
+
+pub fn compiled_{{tracker_fn}}_definition() -> tracen_ir::TrackerDefinition {
+    cached_{{tracker_fn}}_compiled_pack().definition().clone()
+}
+
+pub fn compiled_{{tracker_fn}}_capabilities() -> Value {
+    cached_{{tracker_fn}}_compiled_pack().capabilities().clone()
+}
+
+pub fn compiled_{{tracker_fn}}_tracker_id() -> &'static str {
+    "{{tracker_id}}"
+}
+
+pub fn {{tracker_fn}}_pack_runtime<H>(helpers: H) -> Result<tracen_pack::PackRuntime<{{generated_adapter_type_name}}<H>>, tracen_pack::PackError>
+where
+    H: {{helper_trait_name}},
+{
+    Ok(tracen_pack::PackRuntime::new_shared(
+        Arc::clone(cached_{{tracker_fn}}_compiled_pack()),
+        {{generated_adapter_type_name}}::new(helpers),
+    ))
+}

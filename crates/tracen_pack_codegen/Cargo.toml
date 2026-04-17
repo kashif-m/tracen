@@ -1,0 +1,23 @@
+[package]
+name = "tracen_pack_codegen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+
+description = "Pack code generation using Handlebars templates for Rust and TypeScript."
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tracen_ir.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+handlebars = "6"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tracen_dsl.workspace = true

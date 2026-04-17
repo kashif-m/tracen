@@ -1,0 +1,51 @@
+// AUTO-GENERATED from {{tracker_name}}.tracker. Do not edit.
+
+export const {{tracker_const}}_ID = "{{tracker_id}}" as const;
+
+export const {{tracker_const}}_METRIC_KEYS = [
+{{#each metric_names}}
+  '{{this}}',
+{{/each}}
+] as const;
+
+{{#if view_metrics}}
+export const {{tracker_const}}_VIEW_METRIC_KEYS = {
+{{#each view_metrics}}
+  {{@key}}: [
+    {{#each this}}
+    '{{this}}',
+    {{/each}}
+  ],
+{{/each}}
+} as const;
+{{/if}}
+
+{{#if view_defaults}}
+export const {{tracker_const}}_VIEW_DEFAULT_METRIC = {
+{{#each view_defaults}}
+  {{@key}}: '{{this}}',
+{{/each}}
+} as const;
+{{/if}}
+
+{{#if view_metric_config}}
+export const {{tracker_const}}_VIEW_METRIC_CONFIG = {
+{{#each view_metric_config}}
+  {{@key}}: {
+    {{#each this}}
+    {{@key}}: {
+      metric: '{{metric}}',
+      label: '{{label}}',
+      unit: '{{unit}}',
+      modes: [{{#each modes}}'{{this}}'{{#unless @last}}, {{/unless}}{{/each}}],
+      requires: [{{#each requires}}'{{this}}'{{#unless @last}}, {{/unless}}{{/each}}],
+    },
+    {{/each}}
+  },
+{{/each}}
+} as const;
+{{/if}}
+
+export type {{tracker_type}}MetricKey = (typeof {{tracker_const}}_METRIC_KEYS)[number];
+export type {{tracker_type}}ViewName = keyof typeof {{tracker_const}}_VIEW_METRIC_KEYS;
+export type {{tracker_type}}ViewMetricKey<V extends {{tracker_type}}ViewName> = (typeof {{tracker_const}}_VIEW_METRIC_KEYS)[V][number];

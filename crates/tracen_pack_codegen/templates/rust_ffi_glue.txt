@@ -1,0 +1,7 @@
+// Auto-generated native compatibility metadata for {{tracker_name}}.
+// Generated from DSL version {{version}}.
+
+pub const {{tracker_const}}_TRACKER_ID: &str = "{{tracker_id}}";
+pub const {{tracker_const}}_COMPAT_API_CONTRACT: &str = "{{compat_api_contract_file}}";
+pub const {{tracker_const}}_COMPAT_DOMAIN_CONTRACT: &str = "{{compat_domain_contract_file}}";
+pub const {{tracker_const}}_COMPAT_DSL_CONTRACT: &str = "{{compat_dsl_contract_file}}";

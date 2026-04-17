@@ -1,0 +1,72 @@
+// AUTO-GENERATED from {{tracker_name}} pack domain contracts. Do not edit.
+
+{{#each extern_ts_imports}}
+import type {
+{{#each names}}
+  {{this}},
+{{/each}}
+} from '{{module}}';
+{{/each}}
+import type { {{tracker_type}}PackCapabilities } from './{{core_domain_contract_module}}';
+
+export type DomainJsonValue =
+  | null
+  | boolean
+  | number
+  | BrandedString
+  | DomainJsonObject
+  | DomainJsonValue[];
+
+export type DomainJsonObject = {
+  [key: string]: DomainJsonValue;
+};
+
+export type {{tracker_type}}Event = DomainJsonObject & {
+  event_id: EventId;
+  tracker_id: TrackerId;
+  ts: number;
+  payload: DomainJsonObject;
+  meta: DomainJsonObject;
+};
+
+export type {{tracker_type}}State = {
+  events: {{tracker_type}}Event[];
+};
+
+{{#each catalog_entries}}
+export interface {{compat_base_type}} {
+{{#each fields}}
+  {{name}}{{#if optional}}?{{/if}}: {{{rendered_ts_type}}};
+{{/each}}
+}
+
+{{#if compat_overlay_type}}
+export type {{compat_overlay_type}} = {{compat_base_type}} & {
+  source: {{{compat_overlay_source_type}}};
+  archived?: boolean;
+};
+
+{{/if}}
+{{/each}}
+{{#each domain_types}}
+{{#if is_object}}
+export type {{name}} = {
+{{#each fields}}
+  {{name}}{{#if optional}}?{{/if}}: {{{rendered_ts_type}}};
+{{/each}}
+};
+
+{{/if}}
+{{#if is_enum}}
+export type {{name}} =
+{{#each variants}}
+  | '{{value}}'{{#if @last}};{{/if}}
+{{/each}}
+
+{{/if}}
+{{#if is_alias}}
+export type {{name}} = {{{target}}};
+
+{{/if}}
+{{/each}}
+export type {{analytics_capabilities_type}} = {{tracker_type}}PackCapabilities;

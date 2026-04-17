@@ -1,0 +1,19 @@
+[package]
+name = "tracen_engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+description.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracen_ir.workspace = true
+tracen_eval.workspace = true
+tracen_dsl.workspace = true

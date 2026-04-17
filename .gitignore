@@ -1,0 +1,5 @@
+/target/
+**/target/
+**/*.profraw
+.nix-zsh/
+.DS_Store

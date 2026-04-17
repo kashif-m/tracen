@@ -1,0 +1,24 @@
+[package]
+name = "tracen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+description = "Public facade crate for Tracen runtime, DSL, analytics, export, and FFI modules."
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tracen_analytics.workspace = true
+tracen_catalog.workspace = true
+tracen_dsl.workspace = true
+tracen_engine.workspace = true
+tracen_eval.workspace = true
+tracen_export.workspace = true
+tracen_ffi.workspace = true
+tracen_ffi_core.workspace = true
+tracen_ir.workspace = true
+tracen_pack.workspace = true
+tracen_pack_codegen.workspace = true

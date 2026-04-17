@@ -1,0 +1,26 @@
+[package]
+name = "tracen_pack"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+
+description = "Build-time pack integration and generic pack runtime for tracker DSL packs."
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracen_analytics = { workspace = true }
+tracen_dsl = { workspace = true }
+tracen_engine = { workspace = true }
+tracen_ir = { workspace = true }
+tracen_pack_codegen = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

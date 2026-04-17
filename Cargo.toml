@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.79"
 license = "MIT"
@@ -38,15 +38,15 @@ serde_repr = "0.1"
 thiserror = "2.0.18"
 time = { version = "0.3.47", features = ["macros"] }
 
-tracen = { version = "0.1.1", path = "crates/tracen" }
-tracen_analytics = { version = "0.1.1", path = "crates/tracen_analytics" }
-tracen_catalog = { version = "0.1.1", path = "crates/tracen_catalog" }
-tracen_dsl = { version = "0.1.1", path = "crates/tracen_dsl" }
-tracen_engine = { version = "0.1.1", path = "crates/tracen_engine" }
-tracen_eval = { version = "0.1.1", path = "crates/tracen_eval" }
-tracen_export = { version = "0.1.1", path = "crates/tracen_export" }
-tracen_ffi = { version = "0.1.1", path = "crates/tracen_ffi" }
-tracen_ffi_core = { version = "0.1.1", path = "crates/tracen_ffi_core" }
-tracen_ir = { version = "0.1.1", path = "crates/tracen_ir" }
-tracen_pack = { version = "0.1.1", path = "crates/tracen_pack" }
-tracen_pack_codegen = { version = "0.1.1", path = "crates/tracen_pack_codegen" }
+tracen = { version = "0.1.2", path = "crates/tracen" }
+tracen_analytics = { version = "0.1.2", path = "crates/tracen_analytics" }
+tracen_catalog = { version = "0.1.2", path = "crates/tracen_catalog" }
+tracen_dsl = { version = "0.1.2", path = "crates/tracen_dsl" }
+tracen_engine = { version = "0.1.2", path = "crates/tracen_engine" }
+tracen_eval = { version = "0.1.2", path = "crates/tracen_eval" }
+tracen_export = { version = "0.1.2", path = "crates/tracen_export" }
+tracen_ffi = { version = "0.1.2", path = "crates/tracen_ffi" }
+tracen_ffi_core = { version = "0.1.2", path = "crates/tracen_ffi_core" }
+tracen_ir = { version = "0.1.2", path = "crates/tracen_ir" }
+tracen_pack = { version = "0.1.2", path = "crates/tracen_pack" }
+tracen_pack_codegen = { version = "0.1.2", path = "crates/tracen_pack_codegen" }

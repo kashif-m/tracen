@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+license-file = "../../LICENSE"
 readme.workspace = true
 description = "Public facade crate for Tracen runtime, DSL, analytics, export, and FFI modules."
 repository.workspace = true

@@ -1075,10 +1075,7 @@ impl ExprParser {
     fn parse_expr(&mut self, min_prec: u8) -> TrackerResult<Expression> {
         let mut left = self.parse_prefix()?;
 
-        loop {
-            let Some((op, prec)) = self.peek_binary_op() else {
-                break;
-            };
+        while let Some((op, prec)) = self.peek_binary_op() {
             if prec < min_prec {
                 break;
             }

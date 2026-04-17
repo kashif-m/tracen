@@ -806,7 +806,7 @@ dependencies = [
 
 [[package]]
 name = "tracen"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "tracen_analytics",
  "tracen_catalog",
@@ -823,7 +823,7 @@ dependencies = [
 
 [[package]]
 name = "tracen_analytics"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "serde",
@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "tracen_catalog"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "serde",
@@ -841,7 +841,7 @@ dependencies = [
 
 [[package]]
 name = "tracen_dsl"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "tracen_engine"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -862,7 +862,7 @@ dependencies = [
 
 [[package]]
 name = "tracen_eval"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -873,7 +873,7 @@ dependencies = [
 
 [[package]]
 name = "tracen_export"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rusqlite",
  "serde",
@@ -882,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "tracen_ffi"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde_json",
  "tracen_ffi_core",
@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "tracen_ffi_core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "tracen_ir"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "chrono",
@@ -912,7 +912,7 @@ dependencies = [
 
 [[package]]
 name = "tracen_pack"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "serde",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "tracen_pack_codegen"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "handlebars",
  "serde",

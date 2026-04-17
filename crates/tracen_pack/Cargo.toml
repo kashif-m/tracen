@@ -8,6 +8,8 @@ readme.workspace = true
 
 description = "Build-time pack integration and generic pack runtime for tracker DSL packs."
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 keywords.workspace = true
 categories.workspace = true
 

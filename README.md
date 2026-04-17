@@ -1,7 +1,5 @@
 # tracen
 
-## Overview
-
 `tracen` is a Rust library for defining trackers, validating events, and computing metrics from event logs.
 
 The tracker definition is the source of truth. It describes the event payload, the derived values, the metrics, and the queryable outputs. The rest of the system works from that definition.

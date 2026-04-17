@@ -8,6 +8,8 @@ readme.workspace = true
 
 description = "Pack code generation using Handlebars templates for Rust and TypeScript."
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 keywords.workspace = true
 categories.workspace = true
 

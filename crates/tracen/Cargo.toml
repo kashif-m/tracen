@@ -7,6 +7,8 @@ license.workspace = true
 readme.workspace = true
 description = "Public facade crate for Tracen runtime, DSL, analytics, export, and FFI modules."
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 keywords.workspace = true
 categories.workspace = true
 

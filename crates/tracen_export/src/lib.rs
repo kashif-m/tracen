@@ -65,7 +65,7 @@ fn default_export_path() -> PathBuf {
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     std::env::temp_dir().join(format!(
-        "wrkt-generic-export-{}-{nanos}.sqlite",
+        "tracen-generic-export-{}-{nanos}.sqlite",
         std::process::id()
     ))
 }

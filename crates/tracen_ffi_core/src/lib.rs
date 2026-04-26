@@ -1,3 +1,4 @@
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::json;
 use std::ffi::{CStr, CString};
@@ -6,6 +7,7 @@ use tracen_engine::{self, EngineError};
 use tracen_export::{export_generic_sqlite, import_generic_sqlite, GenericExportPayload};
 use tracen_ir::error::{ErrorCode, TrackerError};
 use tracen_ir::{NormalizedEvent, Query, TrackerDefinition};
+use tracen_pack::PackError;
 
 #[repr(C)]
 pub struct FfiResult {
@@ -84,8 +86,7 @@ pub fn tracen_export_generic_sqlite(
 ) -> FfiResult {
     handle(|| {
         let payload_json = cstr_to_str(payload_json_ptr)?;
-        let payload: GenericExportPayload =
-            serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
+        let payload: GenericExportPayload = parse_json(payload_json, "export payload")?;
 
         let output_path = if output_path_ptr.is_null() {
             None
@@ -113,7 +114,7 @@ pub fn compile_from_ptr(ptr: *const c_char) -> Result<TrackerDefinition, String>
 
 pub fn parse_events(ptr: *const c_char) -> Result<Vec<NormalizedEvent>, String> {
     let events_json = cstr_to_str(ptr)?;
-    serde_json::from_str(events_json).map_err(|err| err.to_string())
+    parse_json(events_json, "events")
 }
 
 pub fn parse_query(ptr: *const c_char) -> Result<Query, String> {
@@ -124,19 +125,67 @@ pub fn parse_query(ptr: *const c_char) -> Result<Query, String> {
         if json.trim().is_empty() {
             Ok(Query::default())
         } else {
-            serde_json::from_str(json).map_err(|err| err.to_string())
+            parse_json(json, "query")
         }
     }
 }
 
-fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, String> {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, String> {
     if ptr.is_null() {
         Err("null pointer".into())
     } else {
-        unsafe { CStr::from_ptr(ptr) }
-            .to_str()
-            .map_err(|err| err.to_string())
+        // SAFETY: pointer is non-null and expected to reference a valid NUL-terminated C string.
+        unsafe { cstr_ptr_to_str(ptr) }
     }
+}
+
+unsafe fn cstr_ptr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, String> {
+    // SAFETY: caller upholds pointer validity and NUL-termination invariants.
+    unsafe { CStr::from_ptr(ptr) }
+        .to_str()
+        .map_err(|err| err.to_string())
+}
+
+pub fn parse_json<T: DeserializeOwned>(input: &str, context: &str) -> Result<T, String> {
+    serde_json::from_str(input).map_err(|err| {
+        TrackerError::new_simple(
+            ErrorCode::DeserializationFailed,
+            format!("failed to parse {context}: {err}"),
+        )
+        .to_json()
+    })
+}
+
+pub fn parse_json_ptr<T: DeserializeOwned>(ptr: *const c_char, context: &str) -> Result<T, String> {
+    let input = cstr_to_str(ptr)?;
+    parse_json(input, context)
+}
+
+pub fn parse_optional_json_ptr<T: DeserializeOwned>(
+    ptr: *const c_char,
+    context: &str,
+) -> Result<Option<T>, String> {
+    if ptr.is_null() {
+        return Ok(None);
+    }
+    let input = cstr_to_str(ptr)?;
+    if input.trim().is_empty() || input.trim() == "null" {
+        Ok(None)
+    } else {
+        parse_json(input, context).map(Some)
+    }
+}
+
+pub fn map_pack_error(error: PackError) -> String {
+    let code = match error {
+        PackError::Compile(_) => ErrorCode::DslParseError,
+        PackError::Io(_) => ErrorCode::FileIoError,
+        PackError::InvalidQuery(_) => ErrorCode::MetricEvaluationFailed,
+        PackError::Event(_) => ErrorCode::EventValidationFailed,
+        PackError::Adapter(_) => ErrorCode::MetricEvaluationFailed,
+    };
+    TrackerError::new_simple(code, error.to_string()).to_json()
 }
 
 pub fn handle<T>(op: impl FnOnce() -> Result<T, String>) -> FfiResult
@@ -281,6 +330,26 @@ mod tests {
     fn parse_query_rejects_invalid_json() {
         let bad_json = CString::new("{bad json").expect("cstring");
         let err = parse_query(bad_json.as_ptr()).expect_err("invalid query should be rejected");
-        assert!(err.contains("key must be a string") || err.contains("expected"));
+        let parsed = TrackerError::from_json(&err).expect("structured tracker error");
+        assert_eq!(parsed.code, ErrorCode::DeserializationFailed);
+        assert!(parsed.message.contains("failed to parse query"));
+    }
+
+    #[test]
+    fn parse_optional_json_ptr_handles_null_like_values() {
+        let null = std::ptr::null();
+        let from_null: Option<serde_json::Value> =
+            parse_optional_json_ptr(null, "optional").expect("null pointer");
+        assert!(from_null.is_none());
+
+        let empty = CString::new(" ").expect("cstring");
+        let from_empty: Option<serde_json::Value> =
+            parse_optional_json_ptr(empty.as_ptr(), "optional").expect("blank payload");
+        assert!(from_empty.is_none());
+
+        let literal_null = CString::new("null").expect("cstring");
+        let from_literal_null: Option<serde_json::Value> =
+            parse_optional_json_ptr(literal_null.as_ptr(), "optional").expect("null payload");
+        assert!(from_literal_null.is_none());
     }
 }

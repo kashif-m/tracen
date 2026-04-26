@@ -1,4 +1,5 @@
 pub mod distribution;
+pub mod event_semantics;
 pub mod heatmap;
 pub mod streak;
 pub mod time_bucket;

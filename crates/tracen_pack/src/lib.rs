@@ -151,12 +151,13 @@ where
         query_json: &str,
     ) -> Result<Value, PackError> {
         let plan = self.parse_query_json(query_json)?;
+        let normalized_events = apply_runtime_time_semantics(events, offset_minutes);
         if self.options.use_legacy_adapter_for_queries {
             return self
                 .adapter
                 .execute(
                     self.compiled.definition(),
-                    events,
+                    &normalized_events,
                     offset_minutes,
                     catalog_json,
                     &plan,
@@ -166,7 +167,7 @@ where
         match &plan {
             PackExecutionPlan::View(view) => execute_view_query(
                 self.compiled.definition(),
-                events,
+                &normalized_events,
                 offset_minutes,
                 catalog_json,
                 view,
@@ -175,7 +176,7 @@ where
                 .adapter
                 .execute_read_model(
                     self.compiled.definition(),
-                    events,
+                    &normalized_events,
                     offset_minutes,
                     catalog_json,
                     read_model,
@@ -643,6 +644,27 @@ fn prepare_pack_events(
                 ts: event.ts,
                 payload: normalized.payload().clone(),
             })
+        })
+        .collect()
+}
+
+fn apply_runtime_time_semantics(
+    events: &[PackInputEvent],
+    offset_minutes: i32,
+) -> Vec<PackInputEvent> {
+    events
+        .iter()
+        .map(|event| {
+            let mut payload = event.payload.clone();
+            tracen_analytics::event_semantics::normalize_event_payload_buckets(
+                &mut payload,
+                event.ts,
+                offset_minutes,
+            );
+            PackInputEvent {
+                ts: event.ts,
+                payload,
+            }
         })
         .collect()
 }
@@ -1482,9 +1504,12 @@ tracker "filtered_scope_pack" v1 {
         let runtime = PackRuntime::new(compiled, PanicAdapter);
         let events = runtime
             .prepare_events_json(
-                r#"[{"ts":1,"payload":{"segment":"alpha","day_bucket":1000,"amount":100,"units":5}},{"ts":2,"payload":{"segment":"alpha","day_bucket":1000,"amount":80,"units":8}},{"ts":3,"payload":{"segment":"beta","day_bucket":1000,"amount":150,"units":5}},{"ts":4,"payload":{"segment":"alpha","day_bucket":2000,"amount":90,"units":5}},{"ts":5,"payload":{"segment":"beta","day_bucket":2000,"amount":160,"units":5}}]"#,
+                r#"[{"ts":1710000001000,"payload":{"segment":"alpha","amount":100,"units":5}},{"ts":1710000002000,"payload":{"segment":"alpha","amount":80,"units":8}},{"ts":1710000003000,"payload":{"segment":"beta","amount":150,"units":5}},{"ts":1710086401000,"payload":{"segment":"alpha","amount":90,"units":5}},{"ts":1710086402000,"payload":{"segment":"beta","amount":160,"units":5}}]"#,
             )
             .expect("prepare events");
+
+        let day_one_bucket = tracen_analytics::round_to_local_day(1_710_000_001_000, 0);
+        let day_two_bucket = tracen_analytics::round_to_local_day(1_710_086_401_000, 0);
 
         let series_filtered = runtime
             .pack_query(
@@ -1501,7 +1526,7 @@ tracker "filtered_scope_pack" v1 {
         assert_eq!(series_points.len(), 2);
         assert_eq!(
             series_points[0].get("bucket").and_then(Value::as_i64),
-            Some(1000)
+            Some(day_one_bucket)
         );
         assert_eq!(
             series_points[0].get("value").and_then(Value::as_f64),
@@ -1513,7 +1538,7 @@ tracker "filtered_scope_pack" v1 {
         );
         assert_eq!(
             series_points[1].get("bucket").and_then(Value::as_i64),
-            Some(2000)
+            Some(day_two_bucket)
         );
         assert_eq!(
             series_points[1].get("value").and_then(Value::as_f64),
@@ -1611,6 +1636,30 @@ tracker "filtered_scope_pack" v1 {
         }
 
         assert_eq!(legacy_result, native_result);
+    }
+
+    #[test]
+    fn runtime_applies_runtime_time_semantics_to_events() {
+        let events = vec![PackInputEvent {
+            ts: 1_710_000_000_000,
+            payload: serde_json::json!({
+                "day_bucket": 1,
+                "week_bucket": 2,
+                "month_bucket": 3,
+                "segment": "alpha",
+            }),
+        }];
+
+        let normalized = super::apply_runtime_time_semantics(&events, 0);
+        let payload = normalized[0].payload.as_object().expect("object payload");
+
+        assert_ne!(payload.get("day_bucket").and_then(Value::as_i64), Some(1));
+        assert_ne!(payload.get("week_bucket").and_then(Value::as_i64), Some(2));
+        assert_ne!(payload.get("month_bucket").and_then(Value::as_i64), Some(3));
+        assert_eq!(
+            payload.get("segment").and_then(Value::as_str),
+            Some("alpha")
+        );
     }
 
     #[test]

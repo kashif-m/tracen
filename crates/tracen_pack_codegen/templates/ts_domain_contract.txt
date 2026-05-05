@@ -34,6 +34,31 @@ export type {{tracker_type}}State = {
   events: {{tracker_type}}Event[];
 };
 
+{{#if event_plans_enabled}}
+export type {{tracker_type}}EventPlan = {
+  id: string;
+  name: string;
+  revision: number;
+  description?: string;
+  items: {{tracker_type}}EventPlanItem[];
+  meta?: DomainJsonObject;
+};
+
+export type {{tracker_type}}EventPlanItem = {
+  id: string;
+  payload?: DomainJsonObject;
+  meta?: DomainJsonObject;
+};
+
+export type {{tracker_type}}EventDraft = {
+  plan_id: string;
+  plan_revision: number;
+  plan_item_id: string;
+  payload: DomainJsonObject;
+  meta?: DomainJsonObject;
+};
+
+{{/if}}
 {{#each catalog_entries}}
 export interface {{compat_base_type}} {
 {{#each fields}}
@@ -125,4 +150,7 @@ export type {{tracker_type}}PackCapabilities = {
       }>;
     }
   >;
+  event_plans?: {
+    enabled?: boolean;
+  };
 };

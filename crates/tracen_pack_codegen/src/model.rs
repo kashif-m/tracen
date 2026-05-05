@@ -42,6 +42,7 @@ pub struct PackGenModel {
     pub base_catalog_sources: Vec<BaseCatalogSourceModel>,
     pub catalog_entries: Vec<CatalogEntryModel>,
     pub read_models: Vec<ReadModelModel>,
+    pub event_plans_enabled: bool,
     pub api_types: Vec<TypeModel>,
     pub domain_types: Vec<TypeModel>,
     pub rust_types: Vec<TypeModel>,
@@ -482,10 +483,16 @@ impl PackGenModel {
             })
             .collect::<Vec<_>>();
 
+        let event_plans_enabled = def
+            .event_plans()
+            .map(|event_plans| event_plans.enabled)
+            .unwrap_or(false);
+
         let capabilities_json = serde_json::to_string(&build_capabilities(
             &view_data,
             &catalog_entries,
             &read_models,
+            event_plans_enabled,
         ))
         .map_err(|e| format!("failed to serialize capabilities: {e}"))?;
 
@@ -528,6 +535,7 @@ impl PackGenModel {
             base_catalog_sources,
             catalog_entries,
             read_models,
+            event_plans_enabled,
             api_types,
             domain_types,
             rust_types,
@@ -711,6 +719,7 @@ fn build_capabilities(
     view_data: &ViewData,
     catalog_entries: &[CatalogEntryModel],
     read_models: &[ReadModelModel],
+    event_plans_enabled: bool,
 ) -> serde_json::Value {
     let view_map = view_data
         .views
@@ -777,6 +786,9 @@ fn build_capabilities(
         "views": view_map,
         "catalog": catalog_map,
         "read_models": read_model_map,
+        "event_plans": {
+            "enabled": event_plans_enabled,
+        },
     })
 }
 

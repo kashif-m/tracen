@@ -11,10 +11,15 @@ use tracen_eval::{
     EvalError, FieldPath, GroupExpr, MetricName, MetricSpec, ScalarExpr,
 };
 use tracen_ir::{
-    metric_delta, AlertDefinition, BinaryOperator, ComparisonOperator, Condition, EngineOutput,
-    EngineOutputDelta, EngineState, EventId, Expression, FieldDefinition, FieldType,
-    GroupByDimension, MetricDefinition, NormalizedEvent, Query, SimulationOutput, TimeGrain,
-    TimeWindow, Timestamp, TrackerDefinition, TrackerId,
+    metric_delta,
+    schema_validation::{
+        validate_payload_fields as validate_schema_payload_fields, PayloadValidationError,
+        PayloadValidationPolicy,
+    },
+    AlertDefinition, BinaryOperator, ComparisonOperator, Condition, EngineOutput,
+    EngineOutputDelta, EngineState, EventId, Expression, GroupByDimension, MetricDefinition,
+    NormalizedEvent, Query, SimulationOutput, TimeGrain, TimeWindow, Timestamp, TrackerDefinition,
+    TrackerId,
 };
 
 /// Engine-level error codes surfaced across FFI boundaries.
@@ -109,7 +114,7 @@ pub fn validate_event(
     let mut payload = ensure_object(value.get("payload"), "payload")?;
     let meta = ensure_object(value.get("meta"), "meta")?;
 
-    validate_payload(def.fields(), &mut payload)?;
+    validate_payload_fields(def, &mut payload, PayloadValidationPolicy::Event)?;
 
     Ok(NormalizedEvent::new(
         EventId::new(event_id),
@@ -416,64 +421,16 @@ fn ensure_object(value: Option<&Value>, label: &str) -> Result<Value, EngineErro
     }
 }
 
-fn validate_payload(fields: &[FieldDefinition], payload: &mut Value) -> Result<(), EngineError> {
-    if let Some(map) = payload.as_object_mut() {
-        for field in fields {
-            match map.get(&field.name) {
-                Some(value) => validate_field_type(field, value)?,
-                None => {
-                    if let Some(default_value) = &field.default_value {
-                        map.insert(field.name.clone(), default_value.clone());
-                    } else if !field.optional {
-                        Err(EngineError::EventValidation(format!(
-                            "required field missing: {}",
-                            field.name
-                        )))?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    } else {
-        Err(EngineError::EventValidation(
-            "payload must be object".into(),
-        ))
-    }
+fn validate_payload_fields(
+    def: &TrackerDefinition,
+    payload: &mut Value,
+    policy: PayloadValidationPolicy,
+) -> Result<(), EngineError> {
+    validate_schema_payload_fields(def.fields(), payload, policy).map_err(payload_validation_error)
 }
 
-fn validate_field_type(field: &FieldDefinition, value: &Value) -> Result<(), EngineError> {
-    if value.is_null() {
-        if field.optional {
-            Ok(())
-        } else {
-            Err(EngineError::EventValidation(format!(
-                "field '{}' cannot be null",
-                field.name
-            )))
-        }
-    } else {
-        let valid = match &field.field_type {
-            FieldType::Text => value.is_string(),
-            FieldType::Float => value.is_number(),
-            FieldType::Int => value.as_i64().is_some(),
-            FieldType::Bool => value.is_boolean(),
-            FieldType::Duration => value.as_i64().is_some() || value.as_f64().is_some(),
-            FieldType::Timestamp => value.as_i64().is_some(),
-            FieldType::Enum(values) => value
-                .as_str()
-                .map(|v| values.iter().any(|allowed| allowed == v))
-                .unwrap_or(false),
-        };
-
-        if valid {
-            Ok(())
-        } else {
-            Err(EngineError::EventValidation(format!(
-                "field '{}' has invalid type/value",
-                field.name
-            )))
-        }
-    }
+fn payload_validation_error(error: PayloadValidationError) -> EngineError {
+    EngineError::EventValidation(error.to_string())
 }
 
 fn apply_derives(def: &TrackerDefinition, event: &mut NormalizedEvent) -> Result<(), EngineError> {

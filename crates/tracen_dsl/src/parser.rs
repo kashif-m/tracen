@@ -5,11 +5,11 @@ use tracen_ir::error::{ErrorCode, TrackerError, TrackerResult};
 use tracen_ir::{
     AggregationDefinition, AggregationFunc, AlertDefinition, BinaryOperator,
     CatalogEntryDefinition, ComparisonOperator, CompatDefinition, Condition, DeriveDefinition,
-    Expression, ExternTsImportDefinition, ExternTsItemDefinition, FieldDefinition, FieldType,
-    FilterDefinition, FilterOperator, GroupByDimension, HelperDefinition, ImportDefinition,
-    MetricDefinition, PackTypeDefinition, PackTypeKind, PlanningDefinition,
-    PlanningStrategyDefinition, ReadModelDefinition, SchemaFieldDefinition, TimeGrain,
-    TrackerVersion, ViewCompatDefinition, ViewDefinition,
+    EventPlansDefinition, Expression, ExternTsImportDefinition, ExternTsItemDefinition,
+    FieldDefinition, FieldReference, FieldType, FilterDefinition, FilterOperator, GroupByDimension,
+    HelperDefinition, ImportDefinition, MetricDefinition, PackTypeDefinition, PackTypeKind,
+    PlanningDefinition, PlanningStrategyDefinition, ReadModelDefinition, SchemaFieldDefinition,
+    TimeGrain, TrackerVersion, ViewCompatDefinition, ViewDefinition,
 };
 
 pub fn parse_tracker(input: &str) -> TrackerResult<TrackerAst> {
@@ -32,6 +32,7 @@ pub fn parse_tracker(input: &str) -> TrackerResult<TrackerAst> {
     let metrics = parse_metrics(section_body_optional(body, "metrics"))?;
     let alerts = parse_alerts(section_body_optional(body, "alerts"))?;
     let planning = parse_planning(section_body_optional(body, "planning"))?;
+    let event_plans = parse_event_plans(section_body_optional(body, "event_plans"))?;
     let views = parse_views(section_body_optional(body, "views"))?;
     let catalog = parse_catalog(section_body_optional(body, "catalog"))?;
     let read_models = parse_read_models(section_body_optional(body, "read_models"))?;
@@ -49,6 +50,7 @@ pub fn parse_tracker(input: &str) -> TrackerResult<TrackerAst> {
         metrics,
         alerts,
         planning,
+        event_plans,
         views,
         catalog,
         read_models,
@@ -104,16 +106,14 @@ fn parse_fields(body: &str) -> TrackerResult<Vec<FieldDefinition>> {
             rest
         };
 
-        let optional = type_expr
-            .split_whitespace()
-            .any(|token| token == "optional");
-        let field_type = parse_field_type(&type_expr.replace(" optional", ""))?;
+        let (field_type, optional, reference) = parse_field_spec(&type_expr)?;
 
         fields.push(FieldDefinition {
             name,
             field_type,
             optional,
             default_value,
+            reference,
         });
     }
     Ok(fields)
@@ -233,6 +233,21 @@ fn parse_planning(body: Option<&str>) -> TrackerResult<Option<PlanningDefinition
             }
 
             Ok(Some(PlanningDefinition { strategies }))
+        }
+        None => Ok(None),
+    }
+}
+
+fn parse_event_plans(body: Option<&str>) -> TrackerResult<Option<EventPlansDefinition>> {
+    match body {
+        Some(body) => {
+            let params = parse_block_params(body, "event_plans")?;
+            if !params.is_empty() {
+                Err(parse_error(
+                    "event_plans does not accept parameters yet; use an empty block",
+                ))?;
+            }
+            Ok(Some(EventPlansDefinition { enabled: true }))
         }
         None => Ok(None),
     }
@@ -978,6 +993,38 @@ fn parse_field_type(raw: &str) -> TrackerResult<FieldType> {
             other => Err(parse_error(format!("unsupported field type: {other}"))),
         }
     }
+}
+
+fn parse_field_spec(raw: &str) -> TrackerResult<(FieldType, bool, Option<FieldReference>)> {
+    let optional = raw.split_whitespace().any(|token| token == "optional");
+    let without_optional = raw
+        .split_whitespace()
+        .filter(|token| *token != "optional")
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let (type_expr, reference) = if let Some((lhs, rhs)) = without_optional.split_once(" ref ") {
+        let target = rhs.trim();
+        let (catalog, field) = target
+            .split_once('.')
+            .ok_or_else(|| parse_error(format!("invalid field reference target: {target}")))?;
+        if catalog.trim().is_empty() || field.trim().is_empty() {
+            Err(parse_error(format!(
+                "invalid field reference target: {target}"
+            )))?;
+        }
+        (
+            lhs.trim(),
+            Some(FieldReference {
+                catalog: catalog.trim().to_string(),
+                field: field.trim().to_string(),
+            }),
+        )
+    } else {
+        (without_optional.trim(), None)
+    };
+
+    Ok((parse_field_type(type_expr)?, optional, reference))
 }
 
 fn parse_time_grain(raw: &str) -> TrackerResult<TimeGrain> {

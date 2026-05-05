@@ -27,6 +27,7 @@ pub fn compile(input: &str) -> TrackerResult<TrackerDefinition> {
         metrics: ast.metrics,
         alerts: ast.alerts,
         planning: ast.planning,
+        event_plans: ast.event_plans,
         views: ast.views,
         catalog: ast.catalog,
         read_models: ast.read_models,
@@ -110,6 +111,38 @@ fn validate_semantics(ast: &TrackerAst) -> TrackerResult<()> {
                     ),
                 ))?;
             }
+        }
+    }
+
+    for field in &ast.fields {
+        let Some(reference) = &field.reference else {
+            continue;
+        };
+        let Some(catalog_entry) = ast
+            .catalog
+            .iter()
+            .find(|entry| entry.name == reference.catalog)
+        else {
+            return Err(TrackerError::new_simple(
+                ErrorCode::DslInvalidExpression,
+                format!(
+                    "field '{}' references unknown catalog '{}'",
+                    field.name, reference.catalog
+                ),
+            ));
+        };
+        if !catalog_entry
+            .fields
+            .iter()
+            .any(|catalog_field| catalog_field.name == reference.field)
+        {
+            Err(TrackerError::new_simple(
+                ErrorCode::DslInvalidExpression,
+                format!(
+                    "field '{}' references unknown catalog field '{}.{}'",
+                    field.name, reference.catalog, reference.field
+                ),
+            ))?;
         }
     }
 

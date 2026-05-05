@@ -10,6 +10,7 @@ use std::fmt;
 
 // Error handling modules (Phase 1)
 pub mod error;
+pub mod schema_validation;
 
 /// Uniquely identifies a tracker configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -114,6 +115,15 @@ pub struct FieldDefinition {
     pub field_type: FieldType,
     pub optional: bool,
     pub default_value: Option<Value>,
+    #[serde(default)]
+    pub reference: Option<FieldReference>,
+}
+
+/// Catalog reference declared on an event payload field.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldReference {
+    pub catalog: String,
+    pub field: String,
 }
 
 /// Scalar and conditional expression model used by derives/metrics/alerts.
@@ -248,6 +258,11 @@ pub struct PlanningStrategyDefinition {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct PlanningDefinition {
     pub strategies: Vec<PlanningStrategyDefinition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct EventPlansDefinition {
+    pub enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -430,6 +445,7 @@ pub struct TrackerDefinition {
     metrics: Vec<MetricDefinition>,
     alerts: Vec<AlertDefinition>,
     planning: Option<PlanningDefinition>,
+    event_plans: Option<EventPlansDefinition>,
     #[serde(default)]
     views: Vec<ViewDefinition>,
     #[serde(default)]
@@ -460,6 +476,7 @@ pub struct TrackerDefinitionInput {
     pub metrics: Vec<MetricDefinition>,
     pub alerts: Vec<AlertDefinition>,
     pub planning: Option<PlanningDefinition>,
+    pub event_plans: Option<EventPlansDefinition>,
     #[serde(default)]
     pub views: Vec<ViewDefinition>,
     #[serde(default)]
@@ -490,6 +507,7 @@ impl TrackerDefinition {
             metrics,
             alerts,
             planning,
+            event_plans,
             views,
             catalog,
             read_models,
@@ -512,6 +530,7 @@ impl TrackerDefinition {
             metrics,
             alerts,
             planning,
+            event_plans,
             views,
             catalog,
             read_models,
@@ -563,6 +582,10 @@ impl TrackerDefinition {
         self.planning.as_ref()
     }
 
+    pub fn event_plans(&self) -> Option<&EventPlansDefinition> {
+        self.event_plans.as_ref()
+    }
+
     pub fn views(&self) -> &[ViewDefinition] {
         &self.views
     }
@@ -612,6 +635,37 @@ fn build_tracker_id(
         .collect::<String>()
         .to_lowercase();
     TrackerId::new(format!("{}_v{}_{}", normalized, version.major, &hash[..8]))
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EventPlan {
+    pub id: String,
+    pub name: String,
+    pub revision: u64,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub items: Vec<EventPlanItem>,
+    #[serde(default)]
+    pub meta: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EventPlanItem {
+    pub id: String,
+    #[serde(default)]
+    pub payload: Value,
+    #[serde(default)]
+    pub meta: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EventDraft {
+    pub plan_id: String,
+    pub plan_revision: u64,
+    pub plan_item_id: String,
+    pub payload: Value,
+    #[serde(default)]
+    pub meta: Value,
 }
 
 /// Normalized event shape consumed by the engine.

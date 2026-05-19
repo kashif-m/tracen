@@ -228,6 +228,17 @@ pub enum FilterOperator {
     Lte,
 }
 
+/// Representation strategy for grouped metric keys in query output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupKeyEncoding {
+    #[default]
+    /// Keep legacy pipe-joined string grouping keys.
+    Legacy,
+    /// Encode grouped keys as a serialized JSON array to avoid delimiter collisions.
+    Structured,
+}
+
 /// Aggregation declared for one metric.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AggregationDefinition {
@@ -625,16 +636,18 @@ fn build_tracker_id(
     dsl: &str,
     tracker_id_override: Option<&str>,
 ) -> TrackerId {
-    if let Some(value) = tracker_id_override {
-        return TrackerId::new(value.to_string());
+    match tracker_id_override {
+        Some(value) => TrackerId::new(value.to_string()),
+        None => {
+            let hash = blake3::hash(dsl.as_bytes()).to_hex();
+            let normalized = name
+                .chars()
+                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+                .collect::<String>()
+                .to_lowercase();
+            TrackerId::new(format!("{}_v{}_{}", normalized, version.major, &hash[..8]))
+        }
     }
-    let hash = blake3::hash(dsl.as_bytes()).to_hex();
-    let normalized = name
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-        .collect::<String>()
-        .to_lowercase();
-    TrackerId::new(format!("{}_v{}_{}", normalized, version.major, &hash[..8]))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -737,7 +750,14 @@ impl TimeWindow {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Query {
     pub time_window: Option<TimeWindow>,
+    #[serde(default)]
     pub grains: Vec<TimeGrain>,
+    /// Optional precision for numeric metric outputs (defaults to 2 decimal places).
+    #[serde(default)]
+    pub metric_precision: Option<u8>,
+    /// Group-key encoding strategy for grouped metric output.
+    #[serde(default)]
+    pub group_key_encoding: GroupKeyEncoding,
 }
 
 /// Mutable state container for incremental engine application.

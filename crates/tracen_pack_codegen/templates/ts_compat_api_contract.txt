@@ -1,6 +1,13 @@
 // AUTO-GENERATED from {{tracker_name}} pack API. Do not edit.
 
 import type { {{tracker_type}}ViewMetricKey } from './{{compat_dsl_contract_module}}';
+{{#if domain_types.[0]}}
+import type {
+{{#each domain_types}}
+  {{name}},
+{{/each}}
+} from './{{compat_domain_contract_module}}';
+{{/if}}
 
 {{#each api_types}}
 {{#if is_object}}

@@ -198,8 +198,8 @@ where
     ) -> Result<Value, PackError> {
         let plan = self.parse_query_json(query_json)?;
         let normalized_events = apply_runtime_time_semantics(events, offset_minutes);
-        if self.options.use_legacy_adapter_for_queries {
-            return self
+        let result = if self.options.use_legacy_adapter_for_queries {
+            self
                 .adapter
                 .execute(
                     self.compiled.definition(),
@@ -208,27 +208,32 @@ where
                     catalog_json,
                     &plan,
                 )
-                .map_err(PackError::Adapter);
-        }
-        match &plan {
-            PackExecutionPlan::View(view) => execute_view_query(
-                self.compiled.definition(),
-                &normalized_events,
-                offset_minutes,
-                catalog_json,
-                view,
-            ),
-            PackExecutionPlan::ReadModel(read_model) => self
-                .adapter
-                .execute_read_model(
-                    self.compiled.definition(),
-                    &normalized_events,
-                    offset_minutes,
-                    catalog_json,
-                    read_model,
-                )
-                .map_err(PackError::Adapter),
-        }
+                .map_err(PackError::Adapter)
+        } else {
+            match &plan {
+                PackExecutionPlan::View(view) => self
+                    .adapter
+                    .execute_view_query(
+                        self.compiled.definition(),
+                        &normalized_events,
+                        offset_minutes,
+                        catalog_json,
+                        view,
+                    )
+                    .map_err(PackError::Adapter),
+                PackExecutionPlan::ReadModel(read_model) => self
+                    .adapter
+                    .execute_read_model(
+                        self.compiled.definition(),
+                        &normalized_events,
+                        offset_minutes,
+                        catalog_json,
+                        read_model,
+                    )
+                    .map_err(PackError::Adapter),
+            }
+        };
+        result
     }
 }
 
@@ -243,6 +248,23 @@ pub trait PackExecutionAdapter {
         catalog_json: &Value,
         plan: &PackExecutionPlan,
     ) -> Result<Value, String>;
+    fn execute_view_query(
+        &self,
+        definition: &TrackerDefinition,
+        events: &[PackInputEvent],
+        offset_minutes: i32,
+        catalog_json: &Value,
+        query: &ViewQueryPlan,
+    ) -> Result<Value, String> {
+        execute_view_query(
+            definition,
+            events,
+            offset_minutes,
+            catalog_json,
+            query,
+        )
+        .map_err(|err| err.to_string())
+    }
     fn execute_read_model(
         &self,
         definition: &TrackerDefinition,

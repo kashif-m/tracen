@@ -153,6 +153,7 @@ pub fn parse_json<T: DeserializeOwned>(input: &str, context: &str) -> Result<T, 
             ErrorCode::DeserializationFailed,
             format!("failed to parse {context}: {err}"),
         )
+        .with_source(err)
         .to_json()
     })
 }
@@ -167,13 +168,14 @@ pub fn parse_optional_json_ptr<T: DeserializeOwned>(
     context: &str,
 ) -> Result<Option<T>, String> {
     if ptr.is_null() {
-        return Ok(None);
-    }
-    let input = cstr_to_str(ptr)?;
-    if input.trim().is_empty() || input.trim() == "null" {
         Ok(None)
     } else {
-        parse_json(input, context).map(Some)
+        let input = cstr_to_str(ptr)?;
+        if input.trim().is_empty() || input.trim() == "null" {
+            Ok(None)
+        } else {
+            parse_json(input, context).map(Some)
+        }
     }
 }
 
@@ -288,20 +290,23 @@ pub fn parse_ffi_response(response: &str) -> Result<serde_json::Value, TrackerEr
                     ErrorCode::DeserializationFailed,
                     format!("Failed to parse response: {}", e),
                 )
+                .with_source(e)
             }),
             Err(_) => serde_json::from_str(response).map_err(|e| {
                 TrackerError::new_simple(
                     ErrorCode::DeserializationFailed,
                     format!("Failed to parse response: {}", e),
                 )
+                .with_source(e)
             }),
         }
     } else {
-        serde_json::from_str(response).map_err(|_| {
+        serde_json::from_str(response).map_err(|err| {
             TrackerError::new_simple(
                 ErrorCode::DeserializationFailed,
                 format!("Invalid JSON response: {}", response),
             )
+            .with_source(err)
         })
     }
 }

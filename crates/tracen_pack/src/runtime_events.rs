@@ -15,25 +15,24 @@ pub(crate) fn prepare_pack_events(
     definition: &TrackerDefinition,
     events: &[PackInputEvent],
 ) -> Result<Vec<PackInputEvent>, PackError> {
-    events
+    let normalized = events
         .iter()
         .enumerate()
         .map(|(index, event)| {
-            let mut normalized = tracen_ir::NormalizedEvent::new(
-                tracen_ir::EventId::new(format!("pack-{index}-{}", event.ts)),
-                definition.tracker_id().clone(),
-                tracen_ir::Timestamp::new(event.ts),
-                event.payload.clone(),
-                serde_json::json!({}),
-            );
-            tracen_engine::derive_event(definition, &mut normalized)
-                .map_err(to_pack_event_error)?;
-            Ok(PackInputEvent {
-                ts: event.ts,
-                payload: normalized.payload().clone(),
-            })
+            let event_id = format!("pack-{index}-{}", event.ts);
+            tracen_engine::prepare_pack_event(definition, &event_id, event.ts, event.payload.clone())
+                .map_err(to_pack_event_error)
         })
-        .collect()
+        .collect::<Result<Vec<_>, PackError>>()?;
+    let prepared = tracen_engine::prepare_events_for_compute(definition, &normalized)
+        .map_err(to_pack_event_error)?;
+    Ok(prepared
+        .into_iter()
+        .map(|event| PackInputEvent {
+            ts: event.ts().as_millis(),
+            payload: event.payload().clone(),
+        })
+        .collect())
 }
 
 pub(crate) fn apply_runtime_time_semantics(

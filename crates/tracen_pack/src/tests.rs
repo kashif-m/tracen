@@ -172,6 +172,25 @@ tracker "no_event_plans" v1 {
 "#
 }
 
+fn legacy_payload_pack_dsl() -> &'static str {
+    r#"
+tracker "legacy_payload_pack" v1 {
+  fields {
+    modality: text
+    score: int optional
+  }
+  read_models {
+    read_model "events_count" {
+      query_type = "EventsCountQuery"
+      response_type = "EventsCountResponse"
+      params = {"segment":{"type":"string","optional":true}}
+      fields = {"total":{"type":"number"}}
+    }
+  }
+}
+"#
+}
+
 #[test]
 fn build_generates_core_artifacts_for_fixture_integration() {
     let temp = tempdir().expect("tempdir");
@@ -756,4 +775,44 @@ fn runtime_delegates_read_models_through_adapter_contract() {
             .and_then(Value::as_i64),
         Some(42)
     );
+}
+
+#[test]
+fn prepare_pack_query_allows_legacy_events_missing_required_fields() {
+    let compiled = CompiledPack::compile(legacy_payload_pack_dsl()).expect("compile");
+    let runtime = PackRuntime::new(compiled, StubAdapter);
+    let events = vec![
+        PackInputEvent {
+            ts: 1_710_000_000_001,
+            payload: json!({ "score": 10 }),
+        },
+        PackInputEvent {
+            ts: 1_710_000_000_002,
+            payload: json!({}),
+        },
+    ];
+    let prepared = runtime
+        .prepare_events_json(
+            &serde_json::to_string(&events).expect("serialize legacy events"),
+        )
+        .expect("prepare legacy events");
+
+    let query = r#"{"read_model":"events_count"}"#;
+    let output = runtime
+        .pack_query(&prepared, 0, &serde_json::json!([]), query)
+        .expect("pack query should execute");
+
+    assert_eq!(
+        output.get("read_model").and_then(Value::as_str),
+        Some("events_count")
+    );
+    assert_eq!(
+        output
+            .get("params")
+            .and_then(Value::as_object)
+            .and_then(|params| params.get("segment"))
+            .and_then(Value::as_str),
+        None
+    );
+    assert_eq!(prepared.len(), 2);
 }

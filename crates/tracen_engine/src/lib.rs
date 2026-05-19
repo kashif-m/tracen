@@ -2,25 +2,25 @@
 //!
 //! The goal is to expose pure functions that can be called from native or JS runtimes through FFI.
 
+mod event_intake;
+
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use thiserror::Error;
 use tracen_eval::{
-    evaluate_metrics, AggregationFunc as EvalAggregationFunc, AggregationSpec, ConditionExpr,
-    EvalError, FieldPath, GroupExpr, MetricName, MetricSpec, ScalarExpr,
+    evaluate_metrics, QueryConstraints, AggregationFunc as EvalAggregationFunc, AggregationSpec,
+    ConditionExpr, EvalError, FieldPath, GroupExpr, MetricName, MetricSpec, ScalarExpr,
 };
 use tracen_ir::{
     metric_delta,
-    schema_validation::{
-        validate_payload_fields as validate_schema_payload_fields, PayloadValidationError,
-        PayloadValidationPolicy,
-    },
+    schema_validation::PayloadValidationPolicy,
     AlertDefinition, BinaryOperator, ComparisonOperator, Condition, EngineOutput,
     EngineOutputDelta, EngineState, EventId, Expression, GroupByDimension, MetricDefinition,
     NormalizedEvent, Query, SimulationOutput, TimeGrain, TimeWindow, Timestamp, TrackerDefinition,
     TrackerId,
 };
+use event_intake::{build_pack_event, parse_event_from_json};
 
 /// Engine-level error codes surfaced across FFI boundaries.
 #[derive(Debug, Error)]
@@ -89,40 +89,21 @@ pub fn validate_event(
     def: &TrackerDefinition,
     event_json: &str,
 ) -> Result<NormalizedEvent, EngineError> {
-    let value: Value = serde_json::from_str(event_json)
-        .map_err(|err| EngineError::EventValidation(err.to_string()))?;
+    parse_event_from_json(def, event_json, PayloadValidationPolicy::Event)
+}
 
-    let event_id = value
-        .get("event_id")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| EngineError::EventValidation("event_id is required".into()))?;
+/// Compiles compute-time metric plan and validates definitions once.
+pub fn compile_compute_plan(
+    def: &TrackerDefinition,
+) -> Result<ComputePlan, EngineError> {
+    Ok(ComputePlan {
+        metric_specs: compile_metric_specs(def.metrics())?,
+    })
+}
 
-    let ts = value
-        .get("ts")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| EngineError::EventValidation("ts must be an integer timestamp".into()))?;
-
-    let tracker_id = value
-        .get("tracker_id")
-        .and_then(Value::as_str)
-        .map(TrackerId::new)
-        .unwrap_or_else(|| def.tracker_id().clone());
-
-    ensure_tracker(def, &tracker_id)?;
-
-    let mut payload = ensure_object(value.get("payload"), "payload")?;
-    let meta = ensure_object(value.get("meta"), "meta")?;
-
-    validate_payload_fields(def, &mut payload, PayloadValidationPolicy::Event)?;
-
-    Ok(NormalizedEvent::new(
-        EventId::new(event_id),
-        tracker_id,
-        Timestamp::new(ts),
-        payload,
-        meta,
-    ))
+#[derive(Clone, Debug)]
+pub struct ComputePlan {
+    metric_specs: Vec<MetricSpec>,
 }
 
 /// Stateless compute over the provided event slice.
@@ -131,25 +112,67 @@ pub fn compute(
     events: &[NormalizedEvent],
     query: Query,
 ) -> Result<EngineOutput, EngineError> {
-    let relevant = prepare_events(def, events)?;
+    let prepared = prepare_events_for_compute(def, events)?;
+    let plan = compile_compute_plan(def)?;
+    compute_with_plan(def, &plan, &prepared, query)
+}
 
-    let total_events = relevant.len();
-    let window_events = match query.time_window {
-        Some(window) => relevant
-            .iter()
-            .filter(|event| window.contains(event.ts()))
-            .count(),
-        None => total_events,
+/// Precompute derived fields for one-pass compute paths.
+///
+/// High-throughput pipeline:
+/// 1) parse/compile tracker
+/// 2) `prepare_events_for_compute` once per immutable batch
+/// 3) call `compute_with_prepared_events` / `compute_metric_by_name_with_prepared_events`
+///    repeatedly without recomputing derives.
+pub fn prepare_events_for_compute(
+    def: &TrackerDefinition,
+    events: &[NormalizedEvent],
+) -> Result<Vec<NormalizedEvent>, EngineError> {
+    prepare_events(def, events)
+}
+
+/// Builds a normalized event for pack-style inputs without full event JSON parsing.
+pub fn prepare_pack_event(
+    def: &TrackerDefinition,
+    event_id: &str,
+    ts: i64,
+    payload: Value,
+) -> Result<NormalizedEvent, EngineError> {
+    build_pack_event(
+        def,
+        EventId::new(event_id),
+        Timestamp::new(ts),
+        payload,
+    )
+}
+
+/// Execute a previously prepared compute plan against an already prepared event slice.
+pub fn compute_with_plan(
+    def: &TrackerDefinition,
+    plan: &ComputePlan,
+    prepared_events: &[NormalizedEvent],
+    query: Query,
+) -> Result<EngineOutput, EngineError> {
+    ensure_events(def, prepared_events)?;
+
+    let constraints = QueryConstraints::from_query(&query);
+    let total_events = prepared_events.len();
+    let window_events = if query.time_window.is_none() {
+        total_events
+    } else {
+        constraints.select_events(prepared_events).len()
     };
 
-    let metric_specs = compile_metric_specs(def.metrics())?;
-    let mut metrics =
-        evaluate_metrics(&metric_specs, &relevant, &query).map_err(EngineError::from)?;
+    let metrics = evaluate_metrics(&plan.metric_specs, prepared_events, &query)
+        .map_err(EngineError::from)?;
+
+    let relevant_events = constraints.select_events(prepared_events);
+    let mut metrics = metrics;
     if query.time_window.is_some() {
         metrics.insert("window_event_count".into(), json!(window_events));
     }
 
-    let alerts = evaluate_alerts(def.alerts(), &relevant)?;
+    let alerts = evaluate_alerts(def.alerts(), &relevant_events)?;
 
     Ok(EngineOutput {
         total_events,
@@ -157,6 +180,18 @@ pub fn compute(
         metrics,
         alerts,
     })
+}
+
+/// Compute over an already prepared event slice (derived fields already populated).
+///
+/// This avoids reapplying derives when callers supply pre-derived payloads.
+pub fn compute_with_prepared_events(
+    def: &TrackerDefinition,
+    prepared_events: &[NormalizedEvent],
+    query: Query,
+) -> Result<EngineOutput, EngineError> {
+    let plan = compile_compute_plan(def)?;
+    compute_with_plan(def, &plan, prepared_events, query)
 }
 
 /// Applies a new normalized event to the engine state and returns metric deltas.
@@ -200,11 +235,15 @@ pub fn simulate(
     hypothetical_events: &[NormalizedEvent],
     query: Query,
 ) -> Result<SimulationOutput, EngineError> {
-    ensure_events(def, hypothetical_events)?;
-    let base_output = compute(def, base_events, query.clone())?;
-    let mut future = base_events.to_vec();
-    future.extend_from_slice(hypothetical_events);
-    let hypothetical_output = compute(def, &future, query)?;
+    let base_prepared = prepare_events_for_compute(def, base_events)?;
+    let hypothetical_prepared = prepare_events_for_compute(def, hypothetical_events)?;
+    let plan = compile_compute_plan(def)?;
+
+    let mut future = base_prepared.clone();
+    future.extend_from_slice(&hypothetical_prepared);
+
+    let base_output = compute_with_plan(def, &plan, &base_prepared, query.clone())?;
+    let hypothetical_output = compute_with_plan(def, &plan, &future, query)?;
 
     let delta = EngineOutputDelta {
         total_events_delta: hypothetical_output.total_events as isize
@@ -244,6 +283,7 @@ pub fn compute_view_metric(
     group_by: Vec<GroupByDimension>,
     query: Query,
 ) -> Result<Value, EngineError> {
+    let prepared = prepare_events_for_compute(def, events)?;
     let view = def
         .views()
         .iter()
@@ -270,14 +310,10 @@ pub fn compute_view_metric(
         .cloned()
         .unwrap_or_else(|| metric_key.to_string());
 
-    if def
-        .metrics()
-        .iter()
-        .any(|candidate| candidate.name == metric_name)
-    {
-        compute_metric_by_name(
+    if def.metrics().iter().any(|candidate| candidate.name == metric_name) {
+        compute_metric_by_name_with_prepared_events(
             def,
-            events,
+            &prepared,
             &metric_name,
             MetricComputeOptions {
                 group_by: Some(group_by),
@@ -286,8 +322,6 @@ pub fn compute_view_metric(
             },
         )
     } else {
-        let relevant = prepare_events(def, events)?;
-
         let func = match metric.aggregation.as_deref().unwrap_or("sum") {
             "sum" => EvalAggregationFunc::Sum,
             "max" => EvalAggregationFunc::Max,
@@ -331,7 +365,7 @@ pub fn compute_view_metric(
             },
         };
 
-        let metrics = evaluate_metrics(&[spec], &relevant, &query).map_err(EngineError::from)?;
+        let metrics = evaluate_metrics(&[spec], &prepared, &query).map_err(EngineError::from)?;
         metrics
             .into_values()
             .next()
@@ -346,7 +380,18 @@ pub fn compute_metric_by_name(
     metric_name: &str,
     options: MetricComputeOptions,
 ) -> Result<Value, EngineError> {
-    let relevant = prepare_events(def, events)?;
+    let prepared = prepare_events_for_compute(def, events)?;
+    compute_metric_by_name_with_prepared_events(def, &prepared, metric_name, options)
+}
+
+/// Compute a metric by name from already prepared events.
+pub fn compute_metric_by_name_with_prepared_events(
+    def: &TrackerDefinition,
+    prepared_events: &[NormalizedEvent],
+    metric_name: &str,
+    options: MetricComputeOptions,
+) -> Result<Value, EngineError> {
+    ensure_events(def, prepared_events)?;
     let metric = def
         .metrics()
         .iter()
@@ -361,8 +406,10 @@ pub fn compute_metric_by_name(
     let query = Query {
         time_window: options.time_window,
         grains: vec![],
+        metric_precision: None,
+        group_key_encoding: Default::default(),
     };
-    let metrics = evaluate_metrics(&[spec], &relevant, &query).map_err(EngineError::from)?;
+    let metrics = evaluate_metrics(&[spec], prepared_events, &query).map_err(EngineError::from)?;
     metrics
         .into_values()
         .next()
@@ -409,28 +456,6 @@ fn ensure_events(def: &TrackerDefinition, events: &[NormalizedEvent]) -> Result<
         ensure_tracker(def, event.tracker_id())?;
     }
     Ok(())
-}
-
-fn ensure_object(value: Option<&Value>, label: &str) -> Result<Value, EngineError> {
-    match value {
-        Some(Value::Object(map)) => Ok(Value::Object(map.clone())),
-        Some(Value::Null) | None => Ok(Value::Object(Map::new())),
-        _ => Err(EngineError::EventValidation(format!(
-            "{label} must be a JSON object"
-        ))),
-    }
-}
-
-fn validate_payload_fields(
-    def: &TrackerDefinition,
-    payload: &mut Value,
-    policy: PayloadValidationPolicy,
-) -> Result<(), EngineError> {
-    validate_schema_payload_fields(def.fields(), payload, policy).map_err(payload_validation_error)
-}
-
-fn payload_validation_error(error: PayloadValidationError) -> EngineError {
-    EngineError::EventValidation(error.to_string())
 }
 
 fn apply_derives(def: &TrackerDefinition, event: &mut NormalizedEvent) -> Result<(), EngineError> {
@@ -547,7 +572,7 @@ fn filters_to_condition(filters: &[MetricFilter]) -> Result<ConditionExpr, Engin
 
 fn evaluate_alerts(
     alerts: &[AlertDefinition],
-    events: &[NormalizedEvent],
+    events: &[&NormalizedEvent],
 ) -> Result<Vec<Value>, EngineError> {
     if alerts.is_empty() || events.is_empty() {
         Ok(Vec::new())
@@ -834,7 +859,7 @@ impl From<EvalError> for EngineError {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tracen_ir::{EventId, NormalizedEvent, Timestamp};
+    use tracen_ir::{EventId, NormalizedEvent, TimeWindow, Timestamp};
 
     fn sample_definition() -> TrackerDefinition {
         compile_tracker(
@@ -890,6 +915,73 @@ mod tests {
             r#"{"event_id":"e1","ts":1,"payload":{"value_a":"oops"}}"#,
         );
         assert!(event.is_err());
+    }
+
+    #[test]
+    fn validate_event_rejects_unknown_fields_by_default() {
+        let def = sample_definition();
+        let event = validate_event(
+            &def,
+            r#"{"event_id":"e1","ts":1,"payload":{"value_a":1,"unknown":"x"}}"#,
+        );
+        assert!(event.is_err());
+    }
+
+    #[test]
+    fn compute_alerts_respect_query_time_window() {
+        let def = compile_tracker(
+            r#"
+            tracker "sample" v1 {
+              fields {
+                value_a: float optional
+              }
+              alerts {
+                too_high = if value_a > 50 then true else false
+              }
+            }
+            "#,
+        )
+        .expect("compile");
+
+        let events = vec![
+            NormalizedEvent::new(
+                EventId::new("e1"),
+                def.tracker_id().clone(),
+                Timestamp::new(1_000),
+                json!({"value_a": 75.0}),
+                json!({}),
+            ),
+            NormalizedEvent::new(
+                EventId::new("e2"),
+                def.tracker_id().clone(),
+                Timestamp::new(2_000),
+                json!({"value_a": 25.0}),
+                json!({}),
+            ),
+            NormalizedEvent::new(
+                EventId::new("e3"),
+                def.tracker_id().clone(),
+                Timestamp::new(3_000),
+                json!({"value_a": 90.0}),
+                json!({}),
+            ),
+        ];
+        let output = compute(
+            &def,
+            &events,
+            Query {
+                time_window: Some(TimeWindow {
+                    start: Timestamp::new(1_500),
+                    end: Timestamp::new(2_500),
+                }),
+                grains: vec![],
+                metric_precision: None,
+                group_key_encoding: Default::default(),
+            },
+        )
+        .expect("compute");
+
+        assert_eq!(output.alerts.len(), 0);
     }
 
     #[test]
@@ -988,5 +1080,57 @@ mod tests {
         let map = grouped.as_object().expect("grouped object");
         assert_eq!(map.get("segment_a"), Some(&json!(2)));
         assert_eq!(map.get("segment_b"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn compute_with_prepared_events_reuses_derives() {
+        let def = sample_definition();
+        let events = vec![
+            sample_event(&def, 1_000, 80, 5),
+            sample_event(&def, 2_000, 60, 8),
+        ];
+        let prepared = prepare_events_for_compute(&def, &events).expect("prepare events");
+        let compute_result = compute_with_prepared_events(&def, &prepared, Query::default())
+            .expect("compute prepared");
+        let direct_result = compute(&def, &events, Query::default()).expect("compute direct");
+        assert_eq!(compute_result.metrics, direct_result.metrics);
+        assert!(prepared[0]
+            .payload()
+            .as_object()
+            .expect("payload object")
+            .contains_key("combined_value"));
+    }
+
+    #[test]
+    fn compute_metric_by_name_with_prepared_events_matches_regular_path() {
+        let def = compile_tracker(
+            r#"
+            tracker "sample" v1 {
+              fields {
+                value_b: int optional
+                value_a: float optional
+              }
+              metrics {
+                total_value = sum(value_a) over all_time
+              }
+            }
+            "#,
+        )
+        .expect("compile");
+        let events = vec![
+            sample_event(&def, 1_000, 80, 5),
+            sample_event(&def, 2_000, 60, 8),
+        ];
+        let prepared = prepare_events_for_compute(&def, &events).expect("prepare");
+        let by_name = compute_metric_by_name_with_prepared_events(
+            &def,
+            &prepared,
+            "total_value",
+            MetricComputeOptions::default(),
+        )
+        .expect("prepared metric");
+        let by_name_direct = compute_metric_by_name(&def, &events, "total_value", MetricComputeOptions::default())
+            .expect("direct metric");
+        assert_eq!(by_name, by_name_direct);
     }
 }

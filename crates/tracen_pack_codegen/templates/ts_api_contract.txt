@@ -1,7 +1,12 @@
 // AUTO-GENERATED from {{tracker_name}} pack core API. Do not edit.
 
 import type { {{tracker_type}}ViewMetricKey } from './{{tracker_fn}}DslContract';
-import type { PackTypeRef } from './{{core_domain_contract_module}}';
+import type {
+  PackTypeRef,
+{{#each domain_types}}
+  {{name}},
+{{/each}}
+} from './{{core_domain_contract_module}}';
 
 export interface PackMetricPoint {
   label: string;

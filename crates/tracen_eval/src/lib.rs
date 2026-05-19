@@ -1,12 +1,17 @@
 //! Expression evaluation and aggregation helpers for tracker metrics.
 
+pub mod query_constraints;
+
+pub use query_constraints::QueryConstraints;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::fmt;
 use thiserror::Error;
 use time::OffsetDateTime;
-use tracen_ir::{NormalizedEvent, Query, TimeGrain, TimeWindow, Timestamp};
+use tracen_ir::{
+    GroupKeyEncoding, NormalizedEvent, Query, TimeGrain, Timestamp,
+};
 
 /// Errors produced while evaluating expressions or aggregations.
 #[derive(Debug, Error)]
@@ -247,47 +252,46 @@ impl FieldPath {
 
     fn evaluate(&self, event: &NormalizedEvent) -> EvalResult<ScalarValue> {
         if self.0.is_empty() {
-            return Ok(ScalarValue::Null);
-        }
-
-        let mut segments = self.0.iter();
-        let Some(first) = segments.next() else {
-            return Ok(ScalarValue::Null);
-        };
-
-        match first.as_str() {
-            "payload" => {
-                let mut current = event.payload();
-                for segment in segments {
-                    let Some(next) = current.get(segment) else {
-                        return Ok(ScalarValue::Null);
-                    };
-                    current = next;
-                }
-                Ok(ScalarValue::from(current))
-            }
-            "meta" => {
-                let mut current = event.meta();
-                for segment in segments {
-                    let Some(next) = current.get(segment) else {
-                        return Ok(ScalarValue::Null);
-                    };
-                    current = next;
-                }
-                Ok(ScalarValue::from(current))
-            }
-            "event" => {
-                let Some(next) = segments.next() else {
-                    return Ok(ScalarValue::Null);
-                };
-                match next.as_str() {
-                    "id" => Ok(ScalarValue::Text(event.event_id().as_str().to_string())),
-                    "tracker_id" => Ok(ScalarValue::Text(event.tracker_id().as_str().to_string())),
-                    "ts" => Ok(ScalarValue::Number(event.ts().as_millis() as f64)),
+            Ok(ScalarValue::Null)
+        } else {
+            let mut segments = self.0.iter();
+            if let Some(first) = segments.next() {
+                match first.as_str() {
+                    "payload" => {
+                        let mut current = event.payload();
+                        for segment in segments {
+                            current = current.get(segment).unwrap_or(&Value::Null);
+                        }
+                        Ok(ScalarValue::from(current))
+                    }
+                    "meta" => {
+                        let mut current = event.meta();
+                        for segment in segments {
+                            current = current.get(segment).unwrap_or(&Value::Null);
+                        }
+                        Ok(ScalarValue::from(current))
+                    }
+                    "event" => {
+                        segments
+                            .next()
+                            .map_or(Ok(ScalarValue::Null), |next| match next.as_str() {
+                                "id" => {
+                                    Ok(ScalarValue::Text(event.event_id().as_str().to_string()))
+                                }
+                                "tracker_id" => {
+                                    Ok(ScalarValue::Text(
+                                        event.tracker_id().as_str().to_string(),
+                                    ))
+                                }
+                                "ts" => Ok(ScalarValue::Number(event.ts().as_millis() as f64)),
+                                _ => Ok(ScalarValue::Null),
+                            })
+                    }
                     _ => Ok(ScalarValue::Null),
                 }
+            } else {
+                Ok(ScalarValue::Null)
             }
-            _ => Ok(ScalarValue::Null),
         }
     }
 }
@@ -369,16 +373,27 @@ pub fn evaluate_metrics(
     events: &[NormalizedEvent],
     query: &Query,
 ) -> EvalResult<BTreeMap<String, Value>> {
-    let filtered_events = filter_events(events, query.time_window);
+    let filtered_events = QueryConstraints::from_query(query).select_events(events);
     let mut metrics = BTreeMap::new();
+    let precision = query.metric_precision.unwrap_or(2) as u32;
     for spec in specs {
-        let value = evaluate_aggregation(&spec.aggregation, &filtered_events)?;
+        let value = evaluate_aggregation(
+            &spec.aggregation,
+            &filtered_events,
+            query.group_key_encoding,
+            precision,
+        )?;
         metrics.insert(spec.name.to_string(), value);
     }
     Ok(metrics)
 }
 
-fn evaluate_aggregation(spec: &AggregationSpec, events: &[&NormalizedEvent]) -> EvalResult<Value> {
+fn evaluate_aggregation(
+    spec: &AggregationSpec,
+    events: &[&NormalizedEvent],
+    group_key_encoding: GroupKeyEncoding,
+    precision: u32,
+) -> EvalResult<Value> {
     let mut buckets: BTreeMap<String, BucketState> = BTreeMap::new();
 
     for event in events {
@@ -388,7 +403,7 @@ fn evaluate_aggregation(spec: &AggregationSpec, events: &[&NormalizedEvent]) -> 
             }
         }
 
-        let key = aggregation_key(event, &spec.group_by)?;
+        let key = aggregation_key(event, &spec.group_by, group_key_encoding)?;
         let bucket = buckets
             .entry(key)
             .or_insert_with(|| BucketState::new(spec.func));
@@ -412,7 +427,7 @@ fn evaluate_aggregation(spec: &AggregationSpec, events: &[&NormalizedEvent]) -> 
 
     let mut result_object = Map::new();
     for (key, bucket) in buckets.into_iter() {
-        result_object.insert(key, bucket.finalize(spec.func));
+        result_object.insert(key, bucket.finalize(spec.func, precision));
     }
 
     if result_object.len() == 1 && !spec.has_grouping() {
@@ -425,39 +440,42 @@ fn evaluate_aggregation(spec: &AggregationSpec, events: &[&NormalizedEvent]) -> 
     }
 }
 
-fn filter_events(events: &[NormalizedEvent], window: Option<TimeWindow>) -> Vec<&NormalizedEvent> {
-    match window {
-        Some(window) => events
-            .iter()
-            .filter(|event| window.contains(event.ts()))
-            .collect(),
-        None => events.iter().collect(),
-    }
-}
-
-fn aggregation_key(event: &NormalizedEvent, groups: &[GroupExpr]) -> EvalResult<String> {
+fn aggregation_key(
+    event: &NormalizedEvent,
+    groups: &[GroupExpr],
+    encoding: GroupKeyEncoding,
+) -> EvalResult<String> {
     if groups.is_empty() {
         Ok("__total__".into())
     } else {
-        let mut parts = Vec::with_capacity(groups.len());
+        let mut keys = Vec::with_capacity(groups.len());
+        let mut values = Vec::with_capacity(groups.len());
         for expr in groups {
             let value = match expr {
                 GroupExpr::Field(path) => path.evaluate(event)?.to_json(),
                 GroupExpr::Time(grain) => Value::String(time_bucket(event.ts(), *grain)),
             };
-            parts.push(value_to_key(value));
+            keys.push(value_to_key(value.clone(), encoding));
+            values.push(value);
         }
-        Ok(parts.join("|"))
+        Ok(match encoding {
+            GroupKeyEncoding::Legacy => keys.join("|"),
+            GroupKeyEncoding::Structured => Value::Array(values).to_string(),
+        })
     }
 }
 
-fn value_to_key(value: Value) -> String {
-    match value {
-        Value::Null => "null".into(),
-        Value::Bool(v) => v.to_string(),
-        Value::Number(v) => v.to_string(),
-        Value::String(v) => v,
-        other => other.to_string(),
+fn value_to_key(value: Value, encoding: GroupKeyEncoding) -> String {
+    if matches!(encoding, GroupKeyEncoding::Legacy) {
+        match value {
+            Value::Null => "null".into(),
+            Value::Bool(v) => v.to_string(),
+            Value::Number(v) => v.to_string(),
+            Value::String(v) => v,
+            other => other.to_string(),
+        }
+    } else {
+        value.to_string()
     }
 }
 
@@ -503,8 +521,10 @@ enum BucketState {
 }
 
 impl BucketState {
-    fn round_metric_value(value: f64) -> f64 {
-        let rounded = (value * 100.0).round() / 100.0;
+    fn round_metric_value(value: f64, precision: u32) -> f64 {
+        let precision = precision.min(18);
+        let factor = 10f64.powi(precision as i32);
+        let rounded = (value * factor).round() / factor;
         if rounded == -0.0 {
             0.0
         } else {
@@ -552,24 +572,24 @@ impl BucketState {
         Ok(())
     }
 
-    fn finalize(self, func: AggregationFunc) -> Value {
+    fn finalize(self, func: AggregationFunc, precision: u32) -> Value {
         match (self, func) {
             (BucketState::Count(count), AggregationFunc::Count) => json!(count),
             (BucketState::Number { sum, .. }, AggregationFunc::Sum) => {
-                json!(Self::round_metric_value(sum))
+                json!(Self::round_metric_value(sum, precision))
             }
             (BucketState::Number { count, sum, .. }, AggregationFunc::Avg) => {
                 if count == 0 {
                     Value::Null
                 } else {
-                    json!(Self::round_metric_value(sum / count as f64))
+                    json!(Self::round_metric_value(sum / count as f64, precision))
                 }
             }
             (BucketState::Number { max, .. }, AggregationFunc::Max) => {
-                max.map_or(Value::Null, |v| json!(Self::round_metric_value(v)))
+                max.map_or(Value::Null, |v| json!(Self::round_metric_value(v, precision)))
             }
             (BucketState::Number { min, .. }, AggregationFunc::Min) => {
-                min.map_or(Value::Null, |v| json!(Self::round_metric_value(v)))
+                min.map_or(Value::Null, |v| json!(Self::round_metric_value(v, precision)))
             }
             (BucketState::Number { .. }, AggregationFunc::Count) | (BucketState::Count(_), _) => {
                 Value::Null
@@ -582,7 +602,7 @@ impl BucketState {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tracen_ir::{EventId, NormalizedEvent, Timestamp, TrackerId};
+    use tracen_ir::{EventId, GroupKeyEncoding, Query, NormalizedEvent, Timestamp, TrackerId};
 
     fn sample_event(payload: Value, ts: i64) -> NormalizedEvent {
         NormalizedEvent::new(
@@ -644,17 +664,22 @@ mod tests {
             group_by: vec![GroupExpr::Field(FieldPath::from("payload.group_key"))],
         };
 
-        let results = evaluate_aggregation(&spec, &events.iter().collect::<Vec<_>>())
+        let results = evaluate_aggregation(
+            &spec,
+            &events.iter().collect::<Vec<_>>(),
+            GroupKeyEncoding::Structured,
+            2,
+        )
             .expect("aggregation should succeed");
         let map = results
             .as_object()
             .expect("expect object when grouping by field");
         assert_eq!(
-            map.get("segment_a").expect("segment_a group"),
+            map.get(r#"["segment_a"]"#).expect("segment_a group"),
             &json!(165.0)
         );
         assert_eq!(
-            map.get("segment_b").expect("segment_b group"),
+            map.get(r#"["segment_b"]"#).expect("segment_b group"),
             &json!(120.0)
         );
     }
@@ -673,10 +698,15 @@ mod tests {
             filter: None,
             group_by: vec![GroupExpr::Field(FieldPath::from("payload.group_key"))],
         };
-        let avg = evaluate_aggregation(&avg_spec, &events.iter().collect::<Vec<_>>())
+        let avg = evaluate_aggregation(
+            &avg_spec,
+            &events.iter().collect::<Vec<_>>(),
+            GroupKeyEncoding::Structured,
+            2,
+        )
             .expect("avg aggregation should succeed");
         let avg_map = avg.as_object().expect("grouped avg result");
-        assert_eq!(avg_map.get("segment_a"), Some(&json!(1.67)));
+        assert_eq!(avg_map.get(r#"["segment_a"]"#), Some(&json!(1.67)));
 
         let sum_spec = AggregationSpec {
             func: AggregationFunc::Sum,
@@ -684,9 +714,84 @@ mod tests {
             filter: None,
             group_by: vec![],
         };
-        let sum = evaluate_aggregation(&sum_spec, &events.iter().collect::<Vec<_>>())
+        let sum = evaluate_aggregation(
+            &sum_spec,
+            &events.iter().collect::<Vec<_>>(),
+            GroupKeyEncoding::Structured,
+            2,
+        )
             .expect("sum aggregation should succeed");
         assert_eq!(sum, json!(5.0));
+    }
+
+    #[test]
+    fn aggregates_support_configurable_metric_precision() {
+        let events = [
+            sample_event(json!({"group_key": "segment_a", "value_a": 1.0}), 1_000),
+            sample_event(json!({"group_key": "segment_a", "value_a": 2.0}), 2_000),
+            sample_event(json!({"group_key": "segment_a", "value_a": 2.0}), 3_000),
+        ];
+
+        let spec = AggregationSpec {
+            func: AggregationFunc::Avg,
+            target: Some(ScalarExpr::Field(FieldPath::from("payload.value_a"))),
+            filter: None,
+            group_by: vec![GroupExpr::Field(FieldPath::from("payload.group_key"))],
+        };
+
+        let query = Query {
+            metric_precision: Some(3),
+            ..Query::default()
+        };
+        let precision = query.metric_precision.unwrap_or(2) as u32;
+        let avg = evaluate_aggregation(
+            &spec,
+            &events.iter().collect::<Vec<_>>(),
+            GroupKeyEncoding::Structured,
+            precision,
+        )
+        .expect("avg aggregation should succeed");
+        let avg_map = avg.as_object().expect("grouped avg result");
+        assert_eq!(avg_map.get(r#"["segment_a"]"#), Some(&json!(1.667)));
+    }
+
+    #[test]
+    fn structured_group_keys_avoid_delimiter_collisions() {
+        let events = [
+            sample_event(json!({"first": "a|b", "second": "c", "value_a": 10.0}), 1_000),
+            sample_event(json!({"first": "a", "second": "b|c", "value_a": 10.0}), 2_000),
+        ];
+
+        let spec = AggregationSpec {
+            func: AggregationFunc::Sum,
+            target: Some(ScalarExpr::Field(FieldPath::from("payload.value_a"))),
+            filter: None,
+            group_by: vec![
+                GroupExpr::Field(FieldPath::from("payload.first")),
+                GroupExpr::Field(FieldPath::from("payload.second")),
+            ],
+        };
+
+        let structured = evaluate_aggregation(
+            &spec,
+            &events.iter().collect::<Vec<_>>(),
+            GroupKeyEncoding::Structured,
+            2,
+        )
+        .expect("structured aggregation should succeed");
+        let structured_map = structured.as_object().expect("grouped structured object");
+        assert_eq!(structured_map.len(), 2);
+        assert!(structured_map.contains_key(r#"["a|b","c"]"#));
+        assert!(structured_map.contains_key(r#"["a","b|c"]"#));
+
+        let legacy = evaluate_aggregation(
+            &spec,
+            &events.iter().collect::<Vec<_>>(),
+            GroupKeyEncoding::Legacy,
+            2,
+        )
+        .expect("legacy aggregation should succeed");
+        assert_eq!(legacy, json!({ "a|b|c": 20.0 }));
     }
 
     #[test]
@@ -705,7 +810,12 @@ mod tests {
             group_by: vec![GroupExpr::Time(TimeGrain::Day)],
         };
 
-        let results = evaluate_aggregation(&spec, &events.iter().collect::<Vec<_>>())
+        let results = evaluate_aggregation(
+            &spec,
+            &events.iter().collect::<Vec<_>>(),
+            GroupKeyEncoding::Structured,
+            2,
+        )
             .expect("aggregation succeeds");
         assert!(results.is_object());
     }

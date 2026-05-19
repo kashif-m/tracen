@@ -13,6 +13,7 @@ export type DomainJsonValue =
   | null
   | boolean
   | number
+  | string
   | BrandedString
   | DomainJsonObject
   | DomainJsonValue[];

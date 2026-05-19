@@ -38,11 +38,12 @@ impl JsonFileStorage {
     }
 
     pub fn from_json(json: &str) -> Result<Vec<CatalogEntry>, TrackerError> {
-        serde_json::from_str(json).map_err(|e| {
+        serde_json::from_str(json).map_err(|err| {
             TrackerError::new_simple(
                 tracen_ir::error::ErrorCode::DeserializationFailed,
-                format!("Failed to parse catalog JSON: {}", e),
+                format!("Failed to parse catalog JSON: {err}"),
             )
+            .with_source(err)
         })
     }
 }
@@ -57,6 +58,7 @@ impl CatalogStorage for JsonFileStorage {
                     tracen_ir::error::ErrorCode::FileIoError,
                     format!("Failed to read catalog file: {}", e),
                 )
+                .with_source(e)
             })?;
 
             Self::from_json(&content)

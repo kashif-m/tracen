@@ -194,7 +194,7 @@ fn parse_planning(body: Option<&str>) -> TrackerResult<Option<PlanningDefinition
         Some(body) => {
             let mut offset = 0usize;
             let mut strategies = Vec::new();
-            while let Some(idx) = find_keyword(&body[offset..], "strategy") {
+            while let Some(idx) = find_top_level_keyword(&body[offset..], "strategy") {
                 let absolute = offset + idx;
                 let remainder = body[absolute..].trim_start();
 
@@ -258,7 +258,7 @@ fn parse_views(body: Option<&str>) -> TrackerResult<Vec<ViewDefinition>> {
         Some(body) => {
             let mut offset = 0usize;
             let mut views = Vec::new();
-            while let Some(idx) = find_keyword(&body[offset..], "view") {
+            while let Some(idx) = find_top_level_keyword(&body[offset..], "view") {
                 let absolute = offset + idx;
                 let remainder = body[absolute..].trim_start();
 
@@ -307,7 +307,7 @@ fn parse_catalog(body: Option<&str>) -> TrackerResult<Vec<CatalogEntryDefinition
         Some(body) => {
             let mut offset = 0usize;
             let mut entries = Vec::new();
-            while let Some(idx) = find_keyword(&body[offset..], "entry") {
+            while let Some(idx) = find_top_level_keyword(&body[offset..], "entry") {
                 let absolute = offset + idx;
                 let remainder = body[absolute..].trim_start();
 
@@ -342,7 +342,7 @@ fn parse_read_models(body: Option<&str>) -> TrackerResult<Vec<ReadModelDefinitio
         Some(body) => {
             let mut offset = 0usize;
             let mut models = Vec::new();
-            while let Some(idx) = find_keyword(&body[offset..], "read_model") {
+            while let Some(idx) = find_top_level_keyword(&body[offset..], "read_model") {
                 let absolute = offset + idx;
                 let remainder = body[absolute..].trim_start();
 
@@ -377,7 +377,7 @@ fn parse_types(body: Option<&str>) -> TrackerResult<Vec<PackTypeDefinition>> {
         Some(body) => {
             let mut offset = 0usize;
             let mut types = Vec::new();
-            while let Some(idx) = find_keyword(&body[offset..], "type") {
+            while let Some(idx) = find_top_level_keyword(&body[offset..], "type") {
                 let absolute = offset + idx;
                 let remainder = body[absolute..].trim_start();
                 let keyword_len = "type".len();
@@ -410,7 +410,7 @@ fn parse_helpers(body: Option<&str>) -> TrackerResult<Vec<HelperDefinition>> {
         Some(body) => {
             let mut offset = 0usize;
             let mut helpers = Vec::new();
-            while let Some(idx) = find_keyword(&body[offset..], "helper") {
+            while let Some(idx) = find_top_level_keyword(&body[offset..], "helper") {
                 let absolute = offset + idx;
                 let remainder = body[absolute..].trim_start();
                 let keyword_len = "helper".len();
@@ -442,7 +442,7 @@ fn parse_imports(body: Option<&str>) -> TrackerResult<Vec<ImportDefinition>> {
         Some(body) => {
             let mut offset = 0usize;
             let mut imports = Vec::new();
-            while let Some(idx) = find_keyword(&body[offset..], "import") {
+            while let Some(idx) = find_top_level_keyword(&body[offset..], "import") {
                 let absolute = offset + idx;
                 let remainder = body[absolute..].trim_start();
                 let keyword_len = "import".len();
@@ -474,7 +474,7 @@ fn parse_extern_ts(body: Option<&str>) -> TrackerResult<Vec<ExternTsImportDefini
         Some(body) => {
             let mut offset = 0usize;
             let mut imports = Vec::new();
-            while let Some(idx) = find_keyword(&body[offset..], "import") {
+            while let Some(idx) = find_top_level_keyword(&body[offset..], "import") {
                 let absolute = offset + idx;
                 let remainder = body[absolute..].trim_start();
                 let keyword_len = "import".len();
@@ -1613,29 +1613,56 @@ fn extract_braced_like(
     open: char,
     close: char,
 ) -> TrackerResult<&str> {
-    let bytes = input.as_bytes();
-    if bytes.get(brace_idx).copied() != Some(open as u8) {
+    if !input.is_char_boundary(brace_idx) {
+        Err(parse_error(format!("invalid UTF-8 boundary for '{open}'")))?
+    }
+    let first = input[brace_idx..].chars().next();
+    if first.is_none() || first != Some(open) {
         Err(parse_error(format!("expected '{open}'")))?;
     }
     let mut depth = 0i32;
-    let mut idx = brace_idx;
+    let mut in_string = false;
+    let mut escaped = false;
     let mut result = None;
-    while idx < bytes.len() {
-        let ch = bytes[idx] as char;
-        if ch == open {
-            depth += 1;
-        } else if ch == close {
-            depth -= 1;
-            if depth == 0 {
-                result = Some(&input[(brace_idx + 1)..idx]);
-                break;
-            }
+    let content_start = brace_idx + open.len_utf8();
+
+    for (offset, ch) in input[brace_idx..].char_indices() {
+        let idx = brace_idx + offset;
+
+        if escaped {
+            escaped = false;
+            continue;
         }
-        idx += 1;
+
+        if in_string {
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            c if c == open => depth += 1,
+            c if c == close => {
+                depth -= 1;
+                if depth == 0 {
+                    result = Some(&input[content_start..idx]);
+                    break;
+                }
+            }
+            _ => {}
+        }
     }
     result.ok_or_else(|| parse_error(format!("unclosed '{open}{close}' block")))
 }
 
+/// Find a keyword in flat text (does not skip nested blocks or string bodies).
+#[cfg(test)]
 fn find_keyword(input: &str, keyword: &str) -> Option<usize> {
     let mut offset = 0usize;
     let mut result = None;
@@ -1656,55 +1683,69 @@ fn find_keyword(input: &str, keyword: &str) -> Option<usize> {
     result
 }
 
+/// Find a keyword at top-level context only (depth 0, outside quoted strings).
 fn find_top_level_keyword(input: &str, keyword: &str) -> Option<usize> {
-    let bytes = input.as_bytes();
-    let mut idx = 0usize;
     let mut depth = 0i32;
     let mut in_string = false;
-    let mut result = None;
+    let mut escaped = false;
+    let keyword_len = keyword.len();
+    let mut found = None;
 
-    while idx < bytes.len() {
-        let ch = bytes[idx] as char;
+    for (idx, ch) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escaped = true;
+            continue;
+        }
         if ch == '"' {
             in_string = !in_string;
-            idx += 1;
             continue;
         }
         if in_string {
-            idx += 1;
             continue;
         }
 
         match ch {
             '{' => {
                 depth += 1;
-                idx += 1;
                 continue;
             }
             '}' => {
                 depth -= 1;
-                idx += 1;
                 continue;
             }
             _ => {}
         }
 
-        if depth == 0 && input[idx..].starts_with(keyword) {
-            let prev_ok =
-                idx == 0 || (!bytes[idx - 1].is_ascii_alphanumeric() && bytes[idx - 1] != b'_');
-            let end = idx + keyword.len();
-            let next_ok =
-                end >= bytes.len() || (!bytes[end].is_ascii_alphanumeric() && bytes[end] != b'_');
+        let end = idx + keyword_len;
+        if depth == 0
+            && input.is_char_boundary(end)
+            && input[idx..].starts_with(keyword)
+        {
+            let prev_ok = idx == 0
+                || !input[..idx]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+            let next_ok = if end >= input.len() {
+                true
+            } else {
+                !input[end..]
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            };
             if prev_ok && next_ok {
-                result = Some(idx);
+                found = Some(idx);
                 break;
             }
         }
-
-        idx += 1;
     }
 
-    result
+    found
 }
 
 fn statement_lines(body: &str) -> Vec<String> {
@@ -1721,25 +1762,41 @@ fn split_top_level(input: &str, separator: char) -> Vec<&str> {
     let mut depth_brace = 0i32;
     let mut depth_bracket = 0i32;
     let mut in_string = false;
+    let mut escaped = false;
     let mut start = 0usize;
-    let chars: Vec<char> = input.chars().collect();
-    for (idx, ch) in chars.iter().enumerate() {
-        match *ch {
-            '"' => in_string = !in_string,
-            '(' if !in_string => depth_paren += 1,
-            ')' if !in_string => depth_paren -= 1,
-            '{' if !in_string => depth_brace += 1,
-            '}' if !in_string => depth_brace -= 1,
-            '[' if !in_string => depth_bracket += 1,
-            ']' if !in_string => depth_bracket -= 1,
+
+    for (idx, ch) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        if in_string {
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '(' => depth_paren += 1,
+            ')' => depth_paren -= 1,
+            '{' => depth_brace += 1,
+            '}' => depth_brace -= 1,
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket -= 1,
             c if c == separator
-                && !in_string
                 && depth_paren == 0
                 && depth_brace == 0
                 && depth_bracket == 0 =>
             {
                 result.push(&input[start..idx]);
-                start = idx + 1;
+                start = idx + separator.len_utf8();
             }
             _ => {}
         }
@@ -1881,5 +1938,65 @@ mod tests {
         let err = parse_tracker(dsl).expect_err("invalid view line should fail");
         assert_eq!(err.code, ErrorCode::DslParseError);
         assert_eq!(err.context["line"], 1);
+    }
+
+    #[test]
+    fn split_top_level_is_unicode_safe() {
+        let input = r#"label = "naïve,值", payload = {"note":"含{括号},测试", "list":["a,b", "c{d}"]}, name="x""#;
+        let parts = split_top_level(input, ',');
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].trim(), r#"label = "naïve,值""#);
+        assert_eq!(parts[1].trim(), r#"payload = {"note":"含{括号},测试", "list":["a,b", "c{d}"]}"#);
+        assert_eq!(parts[2].trim(), r#"name="x""#);
+    }
+
+    #[test]
+    fn extract_braced_like_handles_unicode_and_nested_blocks() {
+        let input = r#"before {value = {"name":"naïve,值","nested":"[{x}]"}, tail="done"} after"#;
+        let start = input.find('{').expect("found outer open");
+        let block = extract_braced_like(input, start, '{', '}').expect("extract block");
+        assert_eq!(
+            block,
+            r#"value = {"name":"naïve,值","nested":"[{x}]"}, tail="done""#
+        );
+    }
+
+    #[test]
+    fn find_keyword_matches_nested_or_top_level_as_expected() {
+        let input = r#"outer { section "inner" { view "ignored" {} } } view "primary" {}"#;
+        let nested_only = r#"outer { view "inner" {} }"#;
+
+        assert_eq!(
+            find_keyword(nested_only, "view"),
+            Some(nested_only.find("view").unwrap())
+        );
+        assert_eq!(
+            find_top_level_keyword(input, "view"),
+            Some(input.rfind("view \"primary\"").expect("expected top-level view"))
+        );
+        assert_eq!(find_top_level_keyword(nested_only, "view"), None);
+    }
+
+    #[test]
+    fn parse_unicode_enum_and_field_names() {
+        let dsl = r#"
+        tracker "sample" v1 {
+          fields {
+            状态: enum("开启","关闭","naïve,值","x{y}")
+            名称: text optional
+          }
+        }
+        "#;
+        let ast = parse_tracker(dsl).expect("parse unicode sample");
+        assert_eq!(ast.fields.len(), 2);
+        assert_eq!(ast.fields[0].name, "状态");
+        assert_eq!(ast.fields[1].name, "名称");
+        match &ast.fields[0].field_type {
+            FieldType::Enum(values) => {
+                assert!(values.contains(&"naïve,值".to_string()));
+                assert!(values.contains(&"x{y}".to_string()));
+            }
+            _ => panic!("expected enum field type"),
+        }
     }
 }

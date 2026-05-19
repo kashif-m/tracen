@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use std::fmt;
+use std::{error::Error as StdError, fmt, sync::Arc};
 
 /// Stable numeric error codes (u16 for FFI compatibility)
 ///
@@ -36,7 +36,11 @@ pub enum ErrorCode {
     /// Unexpected token
     DslUnexpectedToken = 1006,
     /// Reserved for future parsing errors
+    #[doc(hidden)]
+    #[deprecated(note = "Reserved parsing code marker; prefer internal range handling")]
     _ParsingReservedStart = 1007,
+    #[doc(hidden)]
+    #[deprecated(note = "Reserved parsing code marker; prefer internal range handling")]
     _ParsingReservedEnd = 1099,
 
     // Validation errors (1100-1199)
@@ -61,7 +65,11 @@ pub enum ErrorCode {
     /// Event ID is empty or invalid
     InvalidEventId = 1109,
     /// Reserved for future validation errors
+    #[doc(hidden)]
+    #[deprecated(note = "Reserved validation code marker; prefer internal range handling")]
     _ValidationReservedStart = 1110,
+    #[doc(hidden)]
+    #[deprecated(note = "Reserved validation code marker; prefer internal range handling")]
     _ValidationReservedEnd = 1199,
 
     // Evaluation errors (1200-1299)
@@ -80,7 +88,11 @@ pub enum ErrorCode {
     /// Time window is invalid
     InvalidTimeWindow = 1206,
     /// Reserved for future evaluation errors
+    #[doc(hidden)]
+    #[deprecated(note = "Reserved evaluation code marker; prefer internal range handling")]
     _EvaluationReservedStart = 1207,
+    #[doc(hidden)]
+    #[deprecated(note = "Reserved evaluation code marker; prefer internal range handling")]
     _EvaluationReservedEnd = 1299,
 
     // Catalog errors (1300-1399)
@@ -95,7 +107,11 @@ pub enum ErrorCode {
     /// Invalid catalog version
     CatalogVersionMismatch = 1304,
     /// Reserved for future catalog errors
+    #[doc(hidden)]
+    #[deprecated(note = "Reserved catalog code marker; prefer internal range handling")]
     _CatalogReservedStart = 1305,
+    #[doc(hidden)]
+    #[deprecated(note = "Reserved catalog code marker; prefer internal range handling")]
     _CatalogReservedEnd = 1399,
 
     // Planning errors (1400-1499)
@@ -108,7 +124,11 @@ pub enum ErrorCode {
     /// No candidates generated
     PlanningNoCandidates = 1403,
     /// Reserved for future planning errors
+    #[doc(hidden)]
+    #[deprecated(note = "Reserved planning code marker; prefer internal range handling")]
     _PlanningReservedStart = 1404,
+    #[doc(hidden)]
+    #[deprecated(note = "Reserved planning code marker; prefer internal range handling")]
     _PlanningReservedEnd = 1499,
 
     // Storage/IO errors (1500-1599)
@@ -125,7 +145,11 @@ pub enum ErrorCode {
     /// File I/O error
     FileIoError = 1505,
     /// Reserved for future storage errors
+    #[doc(hidden)]
+    #[deprecated(note = "Reserved storage code marker; prefer internal range handling")]
     _StorageReservedStart = 1506,
+    #[doc(hidden)]
+    #[deprecated(note = "Reserved storage code marker; prefer internal range handling")]
     _StorageReservedEnd = 1599,
 
     // Unknown (65535)
@@ -167,31 +191,38 @@ impl ErrorCode {
 
     /// Check if this is a reserved code
     pub fn is_reserved(&self) -> bool {
+        Self::is_reserved_code(*self as u16)
+    }
+
+    /// Check whether a numeric code belongs to a reserved internal range.
+    pub fn is_reserved_code(code: u16) -> bool {
         matches!(
-            self,
-            Self::_ParsingReservedStart
-                | Self::_ParsingReservedEnd
-                | Self::_ValidationReservedStart
-                | Self::_ValidationReservedEnd
-                | Self::_EvaluationReservedStart
-                | Self::_EvaluationReservedEnd
-                | Self::_CatalogReservedStart
-                | Self::_CatalogReservedEnd
-                | Self::_PlanningReservedStart
-                | Self::_PlanningReservedEnd
-                | Self::_StorageReservedStart
-                | Self::_StorageReservedEnd
+            code,
+            1007..=1099 | 1110..=1199 | 1207..=1299 | 1305..=1399 | 1404..=1499 | 1506..=1599
         )
+    }
+
+    /// Resolve reserved code values without exposing internal sentinel variants.
+    pub fn from_u16_reserved(code: u16) -> Option<Self> {
+        if Self::is_reserved_code(code) {
+            match code {
+                1007..=1099 => Some(Self::DslParseError),
+                1110..=1199 => Some(Self::EventValidationFailed),
+                1207..=1299 => Some(Self::MetricEvaluationFailed),
+                1305..=1399 => Some(Self::CatalogEntryNotFound),
+                1404..=1499 => Some(Self::PlanningNoCandidates),
+                1506..=1599 => Some(Self::StorageError),
+                _ => None,
+            }
+        } else {
+            None
+        }
     }
 }
 
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_reserved() {
-            write!(f, "RESERVED({})", *self as u16)
-        } else {
-            write!(f, "{}", *self as u16)
-        }
+        write!(f, "{}", *self as u16)
     }
 }
 
@@ -252,6 +283,10 @@ pub struct TrackerError {
     /// Timestamp when error occurred (milliseconds since epoch)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp_ms: Option<i64>,
+
+    /// Underlying source error (non-serialized).
+    #[serde(skip, default)]
+    pub(crate) source: Option<Arc<dyn StdError + Send + Sync>>,
 }
 
 fn default_context() -> serde_json::Value {
@@ -274,6 +309,7 @@ impl TrackerError {
             severity: code.severity(),
             source_location: Some(format!("{}:{}", location.file(), location.line())),
             timestamp_ms: Some(chrono::Utc::now().timestamp_millis()),
+            source: None,
         }
     }
 
@@ -286,6 +322,7 @@ impl TrackerError {
             severity: code.severity(),
             source_location: None,
             timestamp_ms: None,
+            source: None,
         }
     }
 
@@ -304,6 +341,15 @@ impl TrackerError {
     /// Set source location manually (fluent API)
     pub fn at_location(mut self, file: &str, line: u32) -> Self {
         self.source_location = Some(format!("{}:{}", file, line));
+        self
+    }
+
+    /// Attach an underlying source error for diagnostics.
+    pub fn with_source<E>(mut self, source: E) -> Self
+    where
+        E: StdError + Send + Sync + 'static,
+    {
+        self.source = Some(Arc::new(source));
         self
     }
 
@@ -348,10 +394,10 @@ impl TrackerError {
         matches!(self.severity, ErrorSeverity::Fatal)
     }
 
-    /// Convert to a Result
-    pub fn into_result<T>(self) -> Result<T, Self> {
+    /// Convert to a `Result`, returning the provided `value` for success codes.
+    pub fn to_result<T>(self, value: T) -> Result<T, Self> {
         if self.is_success() {
-            panic!("Cannot convert success error into Err")
+            Ok(value)
         } else {
             Err(self)
         }
@@ -370,7 +416,9 @@ impl fmt::Display for TrackerError {
 
 impl std::error::Error for TrackerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
+        self.source
+            .as_ref()
+            .map(|source| source.as_ref() as &(dyn StdError + 'static))
     }
 }
 
@@ -480,6 +528,28 @@ mod tests {
         assert_eq!(restored.message, original.message);
         assert_eq!(restored.context, original.context);
         assert_eq!(restored.source_location, original.source_location);
+    }
+
+    #[test]
+    fn tracker_error_to_result_and_source_chain() {
+        let success = TrackerError::new_simple(ErrorCode::Success, "ok").to_result(123u8);
+        assert_eq!(success.unwrap(), 123);
+
+        let source_err = std::io::Error::other("disk unavailable");
+        let err = TrackerError::new_simple(ErrorCode::FileIoError, "read failed").with_source(source_err);
+        let chain = err
+            .source()
+            .expect("expected wrapped source")
+            .to_string();
+        assert!(chain.contains("disk unavailable"));
+        assert!(err.to_result(17u8).is_err());
+    }
+
+    #[test]
+    fn reserved_error_code_helpers_are_range_based() {
+        assert!(ErrorCode::is_reserved_code(1007));
+        assert!(ErrorCode::from_u16_reserved(1112).is_some());
+        assert!(ErrorCode::from_u16_reserved(1004).is_none());
     }
 
     #[test]

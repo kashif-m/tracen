@@ -168,16 +168,18 @@ fn validate_semantics(ast: &TrackerAst) -> TrackerResult<()> {
             }
         }
 
-        let mut field_names = std::collections::BTreeSet::new();
-        for field in &model.fields {
-            if !field_names.insert(field.name.clone()) {
-                Err(TrackerError::new_simple(
-                    ErrorCode::DslInvalidExpression,
-                    format!(
-                        "read model '{}' defines duplicate field '{}'",
-                        model.name, field.name
-                    ),
-                ))?;
+        if let Some(fields) = &model.fields {
+            let mut field_names = std::collections::BTreeSet::new();
+            for field in fields {
+                if !field_names.insert(field.name.clone()) {
+                    Err(TrackerError::new_simple(
+                        ErrorCode::DslInvalidExpression,
+                        format!(
+                            "read model '{}' defines duplicate field '{}'",
+                            model.name, field.name
+                        ),
+                    ))?;
+                }
             }
         }
     }
@@ -189,6 +191,44 @@ fn validate_semantics(ast: &TrackerAst) -> TrackerResult<()> {
                 ErrorCode::DslInvalidExpression,
                 format!("duplicate type definition: {}", type_def.name),
             ))?;
+        }
+    }
+    let type_map = ast
+        .types
+        .iter()
+        .map(|type_def| (type_def.name.as_str(), type_def))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for model in &ast.read_models {
+        let response_type = resolved_read_model_response_type(model);
+        match (model.fields.as_ref(), type_map.get(response_type.as_str())) {
+            (Some(_), Some(_)) => {
+                Err(TrackerError::new_simple(
+                    ErrorCode::DslInvalidExpression,
+                    format!(
+                        "read model '{}' defines inline fields for declared response type '{}'",
+                        model.name, response_type
+                    ),
+                ))?;
+            }
+            (None, Some(type_def)) if type_def.kind != tracen_ir::PackTypeKind::Object => {
+                Err(TrackerError::new_simple(
+                    ErrorCode::DslInvalidExpression,
+                    format!(
+                        "read model '{}' references non-object response type '{}'",
+                        model.name, response_type
+                    ),
+                ))?;
+            }
+            (None, None) => {
+                Err(TrackerError::new_simple(
+                    ErrorCode::DslInvalidExpression,
+                    format!(
+                        "read model '{}' must define fields or reference a declared object response_type",
+                        model.name
+                    ),
+                ))?;
+            }
+            (Some(_), None) | (None, Some(_)) => {}
         }
     }
 
@@ -263,12 +303,7 @@ fn validate_semantics(ast: &TrackerAst) -> TrackerResult<()> {
         .map(|type_def| type_def.name.clone())
         .collect::<std::collections::BTreeSet<_>>();
     for model in &ast.read_models {
-        known_schema_types.insert(
-            model
-                .response_type
-                .clone()
-                .unwrap_or_else(|| format!("{}Response", to_pascal_case(&model.name))),
-        );
+        known_schema_types.insert(resolved_read_model_response_type(model));
         known_schema_types.insert(
             model
                 .query_type
@@ -413,8 +448,10 @@ fn validate_semantics(ast: &TrackerAst) -> TrackerResult<()> {
         for field in &model.params {
             ensure_known_type_ref(&known_schema_types, &field.type_ref, &model.name)?;
         }
-        for field in &model.fields {
-            ensure_known_type_ref(&known_schema_types, &field.type_ref, &model.name)?;
+        if let Some(fields) = &model.fields {
+            for field in fields {
+                ensure_known_type_ref(&known_schema_types, &field.type_ref, &model.name)?;
+            }
         }
     }
 
@@ -485,6 +522,13 @@ fn to_pascal_case(input: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("")
+}
+
+fn resolved_read_model_response_type(model: &tracen_ir::ReadModelDefinition) -> String {
+    model
+        .response_type
+        .clone()
+        .unwrap_or_else(|| format!("{}Response", to_pascal_case(&model.name)))
 }
 
 fn is_builtin_type_ref(type_ref: &str) -> bool {
@@ -643,5 +687,84 @@ mod tests {
         }
         "#;
         assert!(compile(dsl).is_err());
+    }
+
+    #[test]
+    fn reject_read_model_with_inline_fields_for_declared_response_type() {
+        let dsl = r#"
+        tracker "x" v1 {
+          fields { value_a: int optional }
+          types {
+            type "HomeResponse" {
+              contract = "api"
+              fields = {"items":{"type":"unknown[]"}}
+            }
+          }
+          read_models {
+            read_model "home" {
+              response_type = "HomeResponse"
+              fields = {"items":{"type":"unknown[]"}}
+            }
+          }
+        }
+        "#;
+        let error = compile(dsl).expect_err("ambiguous response owner should fail");
+        assert!(error
+            .message
+            .contains("defines inline fields for declared response type"));
+    }
+
+    #[test]
+    fn allow_read_model_referencing_declared_object_response_type() {
+        let dsl = r#"
+        tracker "x" v1 {
+          fields { value_a: int optional }
+          types {
+            type "HomeResponse" {
+              contract = "api"
+              fields = {"items":{"type":"unknown[]"}}
+            }
+          }
+          read_models {
+            read_model "home" {
+              response_type = "HomeResponse"
+            }
+          }
+        }
+        "#;
+        let def = compile(dsl).expect("declared response type should be allowed");
+        assert_eq!(def.read_models()[0].fields, None);
+    }
+
+    #[test]
+    fn reject_read_model_without_inline_fields_or_declared_response_type() {
+        let missing_response = r#"
+        tracker "x" v1 {
+          fields { value_a: int optional }
+          read_models {
+            read_model "home" {
+              response_type = "MissingResponse"
+            }
+          }
+        }
+        "#;
+        assert!(compile(missing_response)
+            .expect_err("unknown response type should fail")
+            .message
+            .contains("must define fields or reference a declared object response_type"));
+
+        let omitted_response = r#"
+        tracker "x" v1 {
+          fields { value_a: int optional }
+          read_models {
+            read_model "home" {
+            }
+          }
+        }
+        "#;
+        assert!(compile(omitted_response)
+            .expect_err("missing response shape should fail")
+            .message
+            .contains("must define fields or reference a declared object response_type"));
     }
 }

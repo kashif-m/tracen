@@ -586,11 +586,10 @@ fn build_read_model(
         Some(value) => parse_filters(value)?,
         None => Vec::new(),
     };
-    let fields = parse_schema_fields(
-        params
-            .remove("fields")
-            .ok_or_else(|| parse_error(format!("read model '{}' missing fields", name)))?,
-    )?;
+    let fields = match params.remove("fields") {
+        Some(value) => Some(parse_schema_fields(value)?),
+        None => None,
+    };
 
     Ok(ReadModelDefinition {
         name,

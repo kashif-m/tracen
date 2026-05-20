@@ -180,6 +180,7 @@ pub struct ReadModelModel {
     pub response_type: String,
     pub response_rust_type: String,
     pub emit_rust_response_struct: bool,
+    pub emit_ts_response_interface: bool,
     pub params: Vec<TypeFieldModel>,
     pub filters: Vec<FilterModel>,
     pub fields: Vec<TypeFieldModel>,
@@ -381,6 +382,10 @@ impl PackGenModel {
             .iter()
             .map(|type_def| build_type_model(type_def, &extern_ts_map))
             .collect::<Vec<_>>();
+        let type_model_by_name = type_models
+            .iter()
+            .map(|type_def| (type_def.name.as_str(), type_def))
+            .collect::<BTreeMap<_, _>>();
         let required_rust_types = collect_required_rust_type_names(def);
         let rust_types = type_models
             .iter()
@@ -404,7 +409,33 @@ impl PackGenModel {
                     .response_type
                     .clone()
                     .unwrap_or_else(|| format!("{}Response", to_pascal_case(&model.name)));
-                ReadModelModel {
+                let (fields, emit_ts_response_interface) = match &model.fields {
+                    Some(fields) => (
+                        fields
+                            .iter()
+                            .map(|field| build_type_field_model(field, &extern_ts_map))
+                            .collect(),
+                        true,
+                    ),
+                    None => {
+                        let response_type_model = type_model_by_name
+                            .get(response_type.as_str())
+                            .ok_or_else(|| {
+                                format!(
+                                    "read model '{}' references unknown response type '{}'",
+                                    model.name, response_type
+                                )
+                            })?;
+                        if !response_type_model.is_object {
+                            return Err(format!(
+                                "read model '{}' references non-object response type '{}'",
+                                model.name, response_type
+                            ));
+                        }
+                        (response_type_model.fields.clone(), false)
+                    }
+                };
+                Ok(ReadModelModel {
                     name: model.name.clone(),
                     name_pascal: to_pascal_case(&model.name),
                     rust_method_name: format!(
@@ -418,6 +449,7 @@ impl PackGenModel {
                     pack_query_type: format!("{}PackQuery", to_pascal_case(&model.name)),
                     response_rust_type: resolve_rust_type(&response_type, &extern_ts_map),
                     emit_rust_response_struct: !rust_type_names.contains(&response_type),
+                    emit_ts_response_interface,
                     response_type,
                     params: model
                         .params
@@ -438,14 +470,10 @@ impl PackGenModel {
                             )
                         })
                         .collect(),
-                    fields: model
-                        .fields
-                        .iter()
-                        .map(|field| build_type_field_model(field, &extern_ts_map))
-                        .collect(),
-                }
+                    fields,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, String>>()?;
 
         let api_types = type_models
             .iter()
@@ -461,6 +489,24 @@ impl PackGenModel {
             })
             .cloned()
             .collect::<Vec<_>>();
+        validate_unique_api_contract_exports(
+            &core_api_contract_module,
+            &["PackMetricPoint", "PackDistributionItem"],
+            &tracker_type,
+            &api_types,
+            &view_data.views,
+            &read_models,
+            false,
+        )?;
+        validate_unique_api_contract_exports(
+            &compat_api_contract_module,
+            &[],
+            &tracker_type,
+            &api_types,
+            &view_data.views,
+            &read_models,
+            true,
+        )?;
         let helper_trait_name = format!("{}Helpers", tracker_type);
         let helper_impl_type_name = format!("{}HelperImpl", tracker_type);
         let generated_adapter_type_name = format!("Generated{}PackAdapter", tracker_type);
@@ -874,12 +920,140 @@ fn collect_required_rust_type_names(def: &TrackerDefinition) -> BTreeSet<String>
         for field in &read_model.params {
             collect_type_dependencies(&field.type_ref, &type_map, &mut required);
         }
-        for field in &read_model.fields {
-            collect_type_dependencies(&field.type_ref, &type_map, &mut required);
+        if let Some(fields) = &read_model.fields {
+            for field in fields {
+                collect_type_dependencies(&field.type_ref, &type_map, &mut required);
+            }
         }
     }
 
     required
+}
+
+fn validate_unique_api_contract_exports(
+    module_name: &str,
+    fixed_exports: &[&str],
+    tracker_type: &str,
+    api_types: &[TypeModel],
+    views: &[ViewModel],
+    read_models: &[ReadModelModel],
+    include_view_totals: bool,
+) -> Result<(), String> {
+    let mut seen = BTreeMap::<String, String>::new();
+    let mut duplicates = Vec::<String>::new();
+
+    for name in fixed_exports {
+        record_export_name(&mut seen, &mut duplicates, name, "builtin export");
+    }
+    for type_def in api_types {
+        record_export_name(
+            &mut seen,
+            &mut duplicates,
+            &type_def.name,
+            "declared API type",
+        );
+    }
+    for view in views {
+        record_export_name(
+            &mut seen,
+            &mut duplicates,
+            &view.metric_type_name,
+            &format!("view '{}' metric type", view.name),
+        );
+        if !view.group_by_keys.is_empty() {
+            record_export_name(
+                &mut seen,
+                &mut duplicates,
+                &view.group_by_type_name,
+                &format!("view '{}' group_by type", view.name),
+            );
+        }
+        record_export_name(
+            &mut seen,
+            &mut duplicates,
+            &view.query_type,
+            &format!("view '{}' query type", view.name),
+        );
+        record_export_name(
+            &mut seen,
+            &mut duplicates,
+            &view.pack_query_type,
+            &format!("view '{}' pack query type", view.name),
+        );
+        if include_view_totals && !view.totals_fields.is_empty() {
+            if let Some(totals_type) = &view.totals_type {
+                record_export_name(
+                    &mut seen,
+                    &mut duplicates,
+                    totals_type,
+                    &format!("view '{}' totals type", view.name),
+                );
+            }
+        }
+        record_export_name(
+            &mut seen,
+            &mut duplicates,
+            &view.response_type,
+            &format!("view '{}' response type", view.name),
+        );
+    }
+    for read_model in read_models {
+        record_export_name(
+            &mut seen,
+            &mut duplicates,
+            &read_model.query_type,
+            &format!("read model '{}' query type", read_model.name),
+        );
+        record_export_name(
+            &mut seen,
+            &mut duplicates,
+            &read_model.pack_query_type,
+            &format!("read model '{}' pack query type", read_model.name),
+        );
+        if read_model.emit_ts_response_interface {
+            record_export_name(
+                &mut seen,
+                &mut duplicates,
+                &read_model.response_type,
+                &format!("read model '{}' response type", read_model.name),
+            );
+        }
+    }
+    record_export_name(
+        &mut seen,
+        &mut duplicates,
+        &format!("{tracker_type}PackQuery"),
+        "pack query union",
+    );
+    record_export_name(
+        &mut seen,
+        &mut duplicates,
+        &format!("{tracker_type}PackResult"),
+        "pack result union",
+    );
+
+    if duplicates.is_empty() {
+        return Ok(());
+    }
+
+    duplicates.sort();
+    duplicates.dedup();
+    Err(format!(
+        "generated TS API contract module '{}' has duplicate export name(s): {}",
+        module_name,
+        duplicates.join(", ")
+    ))
+}
+
+fn record_export_name(
+    seen: &mut BTreeMap<String, String>,
+    duplicates: &mut Vec<String>,
+    name: &str,
+    owner: &str,
+) {
+    if let Some(previous_owner) = seen.insert(name.to_string(), owner.to_string()) {
+        duplicates.push(format!("{name} ({previous_owner}; {owner})"));
+    }
 }
 
 fn collect_type_dependencies(
@@ -1287,7 +1461,6 @@ tracker "helper_pack" v1 {
   read_models {
     read_model "rollup" {
       response_type = "RollupPayload"
-      fields = {"inner":{"type":"InnerStat"}}
     }
   }
 }
@@ -1311,6 +1484,93 @@ tracker "helper_pack" v1 {
             .expect("rollup read model");
         assert_eq!(read_model.response_rust_type, "RollupPayload");
         assert!(!read_model.emit_rust_response_struct);
+        assert!(!read_model.emit_ts_response_interface);
+        assert_eq!(read_model.fields.len(), 1);
+        assert_eq!(read_model.fields[0].name, "inner");
+    }
+
+    #[test]
+    fn referenced_read_model_response_type_is_exported_once() {
+        let definition = compile_tracker(
+            r#"
+tracker "helper_pack" v1 {
+  fields {
+    inner: int optional
+  }
+  types {
+    type "RollupPayload" {
+      contract = "api"
+      fields = {"inner":{"type":"int"}}
+    }
+  }
+
+  read_models {
+    read_model "rollup" {
+      response_type = "RollupPayload"
+    }
+  }
+}
+"#,
+        );
+
+        let generator = crate::with_builtin_templates().expect("built-in templates");
+        let artifacts = generator
+            .generate_all(&definition)
+            .expect("generate artifacts");
+        assert_eq!(
+            artifacts
+                .ts_api_contract
+                .matches("export interface RollupPayload")
+                .count(),
+            1
+        );
+        assert_eq!(
+            artifacts
+                .ts_compat_api_contract
+                .matches("export interface RollupPayload")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_generated_api_contract_exports() {
+        let definition = compile_tracker(
+            r#"
+tracker "helper_pack" v1 {
+  fields {
+    inner: int optional
+  }
+  types {
+    type "RollupQuery" {
+      contract = "api"
+      fields = {"inner":{"type":"int"}}
+    }
+    type "RollupPackQuery" {
+      contract = "api"
+      fields = {"inner":{"type":"int"}}
+    }
+  }
+
+  read_models {
+    read_model "rollup" {
+      fields = {"inner":{"type":"int"}}
+    }
+    read_model "other_rollup" {
+      response_type = "RollupResponse"
+      fields = {"inner":{"type":"int"}}
+    }
+  }
+}
+"#,
+        );
+
+        let error = PackGenModel::from_tracker(&definition)
+            .expect_err("duplicate generated exports should fail");
+        assert!(error.contains("duplicate export name"));
+        assert!(error.contains("RollupQuery"));
+        assert!(error.contains("RollupPackQuery"));
+        assert!(error.contains("RollupResponse"));
     }
 
     #[test]

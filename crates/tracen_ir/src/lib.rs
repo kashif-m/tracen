@@ -439,7 +439,7 @@ pub struct ReadModelDefinition {
     #[serde(default)]
     pub filters: Vec<FilterDefinition>,
     #[serde(default)]
-    pub fields: Vec<SchemaFieldDefinition>,
+    pub fields: Option<Vec<SchemaFieldDefinition>>,
 }
 
 /// Result of compiling tracker DSL into validated IR.

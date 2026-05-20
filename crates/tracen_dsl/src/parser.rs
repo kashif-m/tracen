@@ -1721,10 +1721,7 @@ fn find_top_level_keyword(input: &str, keyword: &str) -> Option<usize> {
         }
 
         let end = idx + keyword_len;
-        if depth == 0
-            && input.is_char_boundary(end)
-            && input[idx..].starts_with(keyword)
-        {
+        if depth == 0 && input.is_char_boundary(end) && input[idx..].starts_with(keyword) {
             let prev_ok = idx == 0
                 || !input[..idx]
                     .chars()
@@ -1790,11 +1787,7 @@ fn split_top_level(input: &str, separator: char) -> Vec<&str> {
             '}' => depth_brace -= 1,
             '[' => depth_bracket += 1,
             ']' => depth_bracket -= 1,
-            c if c == separator
-                && depth_paren == 0
-                && depth_brace == 0
-                && depth_bracket == 0 =>
-            {
+            c if c == separator && depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 => {
                 result.push(&input[start..idx]);
                 start = idx + separator.len_utf8();
             }
@@ -1946,7 +1939,10 @@ mod tests {
         let parts = split_top_level(input, ',');
         assert_eq!(parts.len(), 3);
         assert_eq!(parts[0].trim(), r#"label = "naïve,值""#);
-        assert_eq!(parts[1].trim(), r#"payload = {"note":"含{括号},测试", "list":["a,b", "c{d}"]}"#);
+        assert_eq!(
+            parts[1].trim(),
+            r#"payload = {"note":"含{括号},测试", "list":["a,b", "c{d}"]}"#
+        );
         assert_eq!(parts[2].trim(), r#"name="x""#);
     }
 
@@ -1972,7 +1968,11 @@ mod tests {
         );
         assert_eq!(
             find_top_level_keyword(input, "view"),
-            Some(input.rfind("view \"primary\"").expect("expected top-level view"))
+            Some(
+                input
+                    .rfind("view \"primary\"")
+                    .expect("expected top-level view")
+            )
         );
         assert_eq!(find_top_level_keyword(nested_only, "view"), None);
     }

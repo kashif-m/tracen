@@ -20,8 +20,13 @@ pub(crate) fn prepare_pack_events(
         .enumerate()
         .map(|(index, event)| {
             let event_id = format!("pack-{index}-{}", event.ts);
-            tracen_engine::prepare_pack_event(definition, &event_id, event.ts, event.payload.clone())
-                .map_err(to_pack_event_error)
+            tracen_engine::prepare_pack_event(
+                definition,
+                &event_id,
+                event.ts,
+                event.payload.clone(),
+            )
+            .map_err(to_pack_event_error)
         })
         .collect::<Result<Vec<_>, PackError>>()?;
     let prepared = tracen_engine::prepare_events_for_compute(definition, &normalized)

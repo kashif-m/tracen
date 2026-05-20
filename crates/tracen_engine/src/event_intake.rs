@@ -3,18 +3,23 @@ use serde_json::Value;
 use crate::EngineError;
 use tracen_ir::{
     schema_validation::{validate_payload_fields, PayloadValidationError, PayloadValidationPolicy},
-    EventId, NormalizedEvent, TrackerDefinition, TrackerId, Timestamp,
+    EventId, NormalizedEvent, Timestamp, TrackerDefinition, TrackerId,
 };
 
 fn ensure_object(value: Option<&Value>, label: &str) -> Result<Value, EngineError> {
     match value {
         Some(Value::Object(map)) => Ok(Value::Object(map.clone())),
         Some(Value::Null) | None => Ok(Value::Object(Default::default())),
-        _ => Err(EngineError::EventValidation(format!("{label} must be a JSON object"))),
+        _ => Err(EngineError::EventValidation(format!(
+            "{label} must be a JSON object"
+        ))),
     }
 }
 
-fn ensure_tracker_id(definition: &TrackerDefinition, tracker_id: TrackerId) -> Result<(), EngineError> {
+fn ensure_tracker_id(
+    definition: &TrackerDefinition,
+    tracker_id: TrackerId,
+) -> Result<(), EngineError> {
     if tracker_id == *definition.tracker_id() {
         Ok(())
     } else {

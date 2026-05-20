@@ -4,23 +4,21 @@
 
 mod event_intake;
 
+use event_intake::{build_pack_event, parse_event_from_json};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use thiserror::Error;
 use tracen_eval::{
-    evaluate_metrics, QueryConstraints, AggregationFunc as EvalAggregationFunc, AggregationSpec,
-    ConditionExpr, EvalError, FieldPath, GroupExpr, MetricName, MetricSpec, ScalarExpr,
+    evaluate_metrics, AggregationFunc as EvalAggregationFunc, AggregationSpec, ConditionExpr,
+    EvalError, FieldPath, GroupExpr, MetricName, MetricSpec, QueryConstraints, ScalarExpr,
 };
 use tracen_ir::{
-    metric_delta,
-    schema_validation::PayloadValidationPolicy,
-    AlertDefinition, BinaryOperator, ComparisonOperator, Condition, EngineOutput,
-    EngineOutputDelta, EngineState, EventId, Expression, GroupByDimension, MetricDefinition,
-    NormalizedEvent, Query, SimulationOutput, TimeGrain, TimeWindow, Timestamp, TrackerDefinition,
-    TrackerId,
+    metric_delta, schema_validation::PayloadValidationPolicy, AlertDefinition, BinaryOperator,
+    ComparisonOperator, Condition, EngineOutput, EngineOutputDelta, EngineState, EventId,
+    Expression, GroupByDimension, MetricDefinition, NormalizedEvent, Query, SimulationOutput,
+    TimeGrain, TimeWindow, Timestamp, TrackerDefinition, TrackerId,
 };
-use event_intake::{build_pack_event, parse_event_from_json};
 
 /// Engine-level error codes surfaced across FFI boundaries.
 #[derive(Debug, Error)]
@@ -93,9 +91,7 @@ pub fn validate_event(
 }
 
 /// Compiles compute-time metric plan and validates definitions once.
-pub fn compile_compute_plan(
-    def: &TrackerDefinition,
-) -> Result<ComputePlan, EngineError> {
+pub fn compile_compute_plan(def: &TrackerDefinition) -> Result<ComputePlan, EngineError> {
     Ok(ComputePlan {
         metric_specs: compile_metric_specs(def.metrics())?,
     })
@@ -138,12 +134,7 @@ pub fn prepare_pack_event(
     ts: i64,
     payload: Value,
 ) -> Result<NormalizedEvent, EngineError> {
-    build_pack_event(
-        def,
-        EventId::new(event_id),
-        Timestamp::new(ts),
-        payload,
-    )
+    build_pack_event(def, EventId::new(event_id), Timestamp::new(ts), payload)
 }
 
 /// Execute a previously prepared compute plan against an already prepared event slice.
@@ -163,8 +154,8 @@ pub fn compute_with_plan(
         constraints.select_events(prepared_events).len()
     };
 
-    let metrics = evaluate_metrics(&plan.metric_specs, prepared_events, &query)
-        .map_err(EngineError::from)?;
+    let metrics =
+        evaluate_metrics(&plan.metric_specs, prepared_events, &query).map_err(EngineError::from)?;
 
     let relevant_events = constraints.select_events(prepared_events);
     let mut metrics = metrics;
@@ -310,7 +301,11 @@ pub fn compute_view_metric(
         .cloned()
         .unwrap_or_else(|| metric_key.to_string());
 
-    if def.metrics().iter().any(|candidate| candidate.name == metric_name) {
+    if def
+        .metrics()
+        .iter()
+        .any(|candidate| candidate.name == metric_name)
+    {
         compute_metric_by_name_with_prepared_events(
             def,
             &prepared,
@@ -1129,8 +1124,13 @@ mod tests {
             MetricComputeOptions::default(),
         )
         .expect("prepared metric");
-        let by_name_direct = compute_metric_by_name(&def, &events, "total_value", MetricComputeOptions::default())
-            .expect("direct metric");
+        let by_name_direct = compute_metric_by_name(
+            &def,
+            &events,
+            "total_value",
+            MetricComputeOptions::default(),
+        )
+        .expect("direct metric");
         assert_eq!(by_name, by_name_direct);
     }
 }

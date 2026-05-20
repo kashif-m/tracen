@@ -792,9 +792,7 @@ fn prepare_pack_query_allows_legacy_events_missing_required_fields() {
         },
     ];
     let prepared = runtime
-        .prepare_events_json(
-            &serde_json::to_string(&events).expect("serialize legacy events"),
-        )
+        .prepare_events_json(&serde_json::to_string(&events).expect("serialize legacy events"))
         .expect("prepare legacy events");
 
     let query = r#"{"read_model":"events_count"}"#;

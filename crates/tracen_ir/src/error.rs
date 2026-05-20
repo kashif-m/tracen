@@ -536,11 +536,9 @@ mod tests {
         assert_eq!(success.unwrap(), 123);
 
         let source_err = std::io::Error::other("disk unavailable");
-        let err = TrackerError::new_simple(ErrorCode::FileIoError, "read failed").with_source(source_err);
-        let chain = err
-            .source()
-            .expect("expected wrapped source")
-            .to_string();
+        let err =
+            TrackerError::new_simple(ErrorCode::FileIoError, "read failed").with_source(source_err);
+        let chain = err.source().expect("expected wrapped source").to_string();
         assert!(chain.contains("disk unavailable"));
         assert!(err.to_result(17u8).is_err());
     }

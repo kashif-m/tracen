@@ -57,9 +57,7 @@ pub fn validate_payload_fields(
 ) -> Result<(), PayloadValidationError> {
     let map = match payload.as_object_mut() {
         Some(map) => map,
-        None => {
-            Err(PayloadValidationError::PayloadMustBeObject)?
-        }
+        None => Err(PayloadValidationError::PayloadMustBeObject)?,
     };
 
     if matches!(
@@ -78,13 +76,12 @@ pub fn validate_payload_fields(
     for field in fields {
         match map.get(&field.name) {
             Some(value) => validate_field_type(field, value)?,
-            None
-                if matches!(
-                    policy,
-                    PayloadValidationPolicy::Event
-                        | PayloadValidationPolicy::EventLax
-                        | PayloadValidationPolicy::PackQueryLax
-                ) =>
+            None if matches!(
+                policy,
+                PayloadValidationPolicy::Event
+                    | PayloadValidationPolicy::EventLax
+                    | PayloadValidationPolicy::PackQueryLax
+            ) =>
             {
                 if let Some(default_value) = &field.default_value {
                     map.insert(field.name.clone(), default_value.clone());
@@ -139,7 +136,10 @@ fn validate_field_type(
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_payload_fields, FieldDefinition, FieldType, PayloadValidationError, PayloadValidationPolicy};
+    use super::{
+        validate_payload_fields, FieldDefinition, FieldType, PayloadValidationError,
+        PayloadValidationPolicy,
+    };
     use serde_json::json;
 
     fn required_text_field(name: &str) -> FieldDefinition {
@@ -193,12 +193,8 @@ mod tests {
     fn pack_query_lax_accepts_missing_required_fields() {
         let fields = vec![required_text_field("modality")];
         let mut payload = json!({});
-        validate_payload_fields(
-            &fields,
-            &mut payload,
-            PayloadValidationPolicy::PackQueryLax,
-        )
-        .expect("pack query lax should allow missing non-optional field");
+        validate_payload_fields(&fields, &mut payload, PayloadValidationPolicy::PackQueryLax)
+            .expect("pack query lax should allow missing non-optional field");
 
         assert!(payload.get("modality").is_none());
     }
@@ -207,12 +203,8 @@ mod tests {
     fn pack_query_lax_applies_defaults() {
         let fields = vec![optional_text_field_with_default("modality", "missing")];
         let mut payload = json!({});
-        validate_payload_fields(
-            &fields,
-            &mut payload,
-            PayloadValidationPolicy::PackQueryLax,
-        )
-        .expect("pack query lax should apply defaults");
+        validate_payload_fields(&fields, &mut payload, PayloadValidationPolicy::PackQueryLax)
+            .expect("pack query lax should apply defaults");
 
         assert_eq!(payload.get("modality"), Some(&json!("missing")));
     }

@@ -19,7 +19,10 @@ impl QueryConstraints {
 
     pub fn select_events<'a>(&self, events: &'a [NormalizedEvent]) -> Vec<&'a NormalizedEvent> {
         match self.time_window {
-            Some(window) => events.iter().filter(|event| window.contains(event.ts())).collect(),
+            Some(window) => events
+                .iter()
+                .filter(|event| window.contains(event.ts()))
+                .collect(),
             None => events.iter().collect(),
         }
     }
@@ -30,5 +33,4 @@ impl QueryConstraints {
             None => true,
         }
     }
-
 }

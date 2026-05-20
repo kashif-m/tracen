@@ -9,9 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use thiserror::Error;
 use time::OffsetDateTime;
-use tracen_ir::{
-    GroupKeyEncoding, NormalizedEvent, Query, TimeGrain, Timestamp,
-};
+use tracen_ir::{GroupKeyEncoding, NormalizedEvent, Query, TimeGrain, Timestamp};
 
 /// Errors produced while evaluating expressions or aggregations.
 #[derive(Debug, Error)]
@@ -279,9 +277,7 @@ impl FieldPath {
                                     Ok(ScalarValue::Text(event.event_id().as_str().to_string()))
                                 }
                                 "tracker_id" => {
-                                    Ok(ScalarValue::Text(
-                                        event.tracker_id().as_str().to_string(),
-                                    ))
+                                    Ok(ScalarValue::Text(event.tracker_id().as_str().to_string()))
                                 }
                                 "ts" => Ok(ScalarValue::Number(event.ts().as_millis() as f64)),
                                 _ => Ok(ScalarValue::Null),
@@ -585,12 +581,14 @@ impl BucketState {
                     json!(Self::round_metric_value(sum / count as f64, precision))
                 }
             }
-            (BucketState::Number { max, .. }, AggregationFunc::Max) => {
-                max.map_or(Value::Null, |v| json!(Self::round_metric_value(v, precision)))
-            }
-            (BucketState::Number { min, .. }, AggregationFunc::Min) => {
-                min.map_or(Value::Null, |v| json!(Self::round_metric_value(v, precision)))
-            }
+            (BucketState::Number { max, .. }, AggregationFunc::Max) => max
+                .map_or(Value::Null, |v| {
+                    json!(Self::round_metric_value(v, precision))
+                }),
+            (BucketState::Number { min, .. }, AggregationFunc::Min) => min
+                .map_or(Value::Null, |v| {
+                    json!(Self::round_metric_value(v, precision))
+                }),
             (BucketState::Number { .. }, AggregationFunc::Count) | (BucketState::Count(_), _) => {
                 Value::Null
             }
@@ -602,7 +600,7 @@ impl BucketState {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tracen_ir::{EventId, GroupKeyEncoding, Query, NormalizedEvent, Timestamp, TrackerId};
+    use tracen_ir::{EventId, GroupKeyEncoding, NormalizedEvent, Query, Timestamp, TrackerId};
 
     fn sample_event(payload: Value, ts: i64) -> NormalizedEvent {
         NormalizedEvent::new(
@@ -670,7 +668,7 @@ mod tests {
             GroupKeyEncoding::Structured,
             2,
         )
-            .expect("aggregation should succeed");
+        .expect("aggregation should succeed");
         let map = results
             .as_object()
             .expect("expect object when grouping by field");
@@ -704,7 +702,7 @@ mod tests {
             GroupKeyEncoding::Structured,
             2,
         )
-            .expect("avg aggregation should succeed");
+        .expect("avg aggregation should succeed");
         let avg_map = avg.as_object().expect("grouped avg result");
         assert_eq!(avg_map.get(r#"["segment_a"]"#), Some(&json!(1.67)));
 
@@ -720,7 +718,7 @@ mod tests {
             GroupKeyEncoding::Structured,
             2,
         )
-            .expect("sum aggregation should succeed");
+        .expect("sum aggregation should succeed");
         assert_eq!(sum, json!(5.0));
     }
 
@@ -758,8 +756,14 @@ mod tests {
     #[test]
     fn structured_group_keys_avoid_delimiter_collisions() {
         let events = [
-            sample_event(json!({"first": "a|b", "second": "c", "value_a": 10.0}), 1_000),
-            sample_event(json!({"first": "a", "second": "b|c", "value_a": 10.0}), 2_000),
+            sample_event(
+                json!({"first": "a|b", "second": "c", "value_a": 10.0}),
+                1_000,
+            ),
+            sample_event(
+                json!({"first": "a", "second": "b|c", "value_a": 10.0}),
+                2_000,
+            ),
         ];
 
         let spec = AggregationSpec {
@@ -816,7 +820,7 @@ mod tests {
             GroupKeyEncoding::Structured,
             2,
         )
-            .expect("aggregation succeeds");
+        .expect("aggregation succeeds");
         assert!(results.is_object());
     }
 }

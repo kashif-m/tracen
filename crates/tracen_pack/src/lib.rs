@@ -199,8 +199,7 @@ where
         let plan = self.parse_query_json(query_json)?;
         let normalized_events = apply_runtime_time_semantics(events, offset_minutes);
         let result = if self.options.use_legacy_adapter_for_queries {
-            self
-                .adapter
+            self.adapter
                 .execute(
                     self.compiled.definition(),
                     &normalized_events,
@@ -256,14 +255,8 @@ pub trait PackExecutionAdapter {
         catalog_json: &Value,
         query: &ViewQueryPlan,
     ) -> Result<Value, String> {
-        execute_view_query(
-            definition,
-            events,
-            offset_minutes,
-            catalog_json,
-            query,
-        )
-        .map_err(|err| err.to_string())
+        execute_view_query(definition, events, offset_minutes, catalog_json, query)
+            .map_err(|err| err.to_string())
     }
     fn execute_read_model(
         &self,

@@ -1,0 +1,19 @@
+tracker "workout_codegen" v1 {
+  fields {
+    exercise: text
+    duration: int
+    calories: float
+  }
+
+  metrics {
+    total_calories = sum(calories) over all_time
+    total_duration = sum(duration) over all_time
+    sessions = count() over all_time
+  }
+
+  views {
+    view "summary" {
+      config = {"default_metric":"total_calories","query_type":"SummaryQuery","result_kind":"metric_series","response_type":"SummaryResponse","group_by":{"exercise":{"field":"exercise"}},"metrics":{"total_calories":{"metric":"total_calories","label":"Total Calories"},"total_duration":{"metric":"total_duration","label":"Total Duration"}}}
+    }
+  }
+}

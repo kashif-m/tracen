@@ -1,0 +1,13 @@
+tracker "workout_sim" v1 {
+  fields {
+    exercise: text
+    distance: int optional
+    calories: float
+  }
+
+  metrics {
+    total_distance = sum(distance) over all_time
+    total_calories = sum(calories) over all_time
+    workouts = count() over all_time
+  }
+}

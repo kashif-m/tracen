@@ -1,0 +1,6 @@
+{
+  "code": 1004,
+  "context": null,
+  "message": "view 'summary' has invalid config payload: invalid type: string \"{\\\"default_metric\\\": \\\"bad\\\" unquoted_tail}\", expected struct ViewConfig",
+  "severity": "error"
+}

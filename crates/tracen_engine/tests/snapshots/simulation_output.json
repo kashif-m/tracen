@@ -1,0 +1,30 @@
+{
+  "base": {
+    "total_events": 2,
+    "window_events": 2,
+    "metrics": {
+      "total_calories": 550.0,
+      "total_distance": 10.0,
+      "workouts": 2
+    },
+    "alerts": []
+  },
+  "hypothetical": {
+    "total_events": 3,
+    "window_events": 3,
+    "metrics": {
+      "total_calories": 700.0,
+      "total_distance": 10.0,
+      "workouts": 3
+    },
+    "alerts": []
+  },
+  "delta": {
+    "total_events_delta": 1,
+    "metrics": {
+      "total_calories": 150.0,
+      "total_distance": 0.0,
+      "workouts": 1.0
+    }
+  }
+}

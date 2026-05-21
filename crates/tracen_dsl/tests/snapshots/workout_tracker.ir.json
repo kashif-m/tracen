@@ -1,0 +1,106 @@
+{
+  "tracker_id": "workout_tracker_v1_0a73db9c",
+  "tracker_id_override": null,
+  "tracker_name": "workout_tracker",
+  "version": {
+    "major": 1,
+    "minor": 0,
+    "patch": 0
+  },
+  "dsl": "tracker \"workout_tracker\" v1 {\n  fields {\n    exercise: text\n    duration: int optional\n    calories: float\n  }\n\n  derives {\n    is_high = if calories > 300 then 1 else 0\n  }\n\n  metrics {\n    total_calories = sum(calories) over all_time\n    total_duration = sum(duration) over all_time\n    workout_count = count() over all_time\n  }\n\n  alerts {\n    has_high = is_high\n  }\n\n  event_plans {}\n\n  views {\n    view \"summary\" {\n      config = {\"default_metric\":\"total_calories\",\"query_type\":\"SummaryQuery\",\"response_type\":\"SummaryResponse\",\"result_kind\":\"single\",\"metrics\":{\"total_calories\":{\"metric\":\"total_calories\",\"label\":\"Total Calories\"}}}\n    }\n  }\n}\n",
+  "fields": [
+    {
+      "name": "exercise",
+      "field_type": "Text",
+      "optional": false,
+      "default_value": null,
+      "reference": null
+    },
+    {
+      "name": "duration",
+      "field_type": "Int",
+      "optional": true,
+      "default_value": null,
+      "reference": null
+    },
+    {
+      "name": "calories",
+      "field_type": "Float",
+      "optional": false,
+      "default_value": null,
+      "reference": null
+    }
+  ],
+  "derives": [],
+  "metrics": [
+    {
+      "name": "total_calories",
+      "aggregation": {
+        "func": "Sum",
+        "target": {
+          "Field": "calories"
+        },
+        "group_by": [],
+        "over": "AllTime"
+      }
+    },
+    {
+      "name": "total_duration",
+      "aggregation": {
+        "func": "Sum",
+        "target": {
+          "Field": "duration"
+        },
+        "group_by": [],
+        "over": "AllTime"
+      }
+    },
+    {
+      "name": "workout_count",
+      "aggregation": {
+        "func": "Count",
+        "target": null,
+        "group_by": [],
+        "over": "AllTime"
+      }
+    }
+  ],
+  "alerts": [
+    {
+      "name": "has_high",
+      "expr": {
+        "Field": "is_high"
+      }
+    }
+  ],
+  "planning": null,
+  "event_plans": {
+    "enabled": true
+  },
+  "views": [
+    {
+      "name": "summary",
+      "params": {
+        "config": {
+          "default_metric": "total_calories",
+          "metrics": {
+            "total_calories": {
+              "label": "Total Calories",
+              "metric": "total_calories"
+            }
+          },
+          "query_type": "SummaryQuery",
+          "response_type": "SummaryResponse",
+          "result_kind": "single"
+        }
+      }
+    }
+  ],
+  "catalog": [],
+  "read_models": [],
+  "types": [],
+  "helpers": [],
+  "imports": [],
+  "extern_ts": [],
+  "compat": null
+}

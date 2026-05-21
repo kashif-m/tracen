@@ -1,0 +1,10 @@
+{
+  "total_events": 3,
+  "window_events": 3,
+  "metrics": {
+    "total_calories": 700.0,
+    "total_distance": 10.0,
+    "workouts": 3
+  },
+  "alerts": []
+}

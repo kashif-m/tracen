@@ -1,6 +1,18 @@
 // AUTO-GENERATED from {{tracker_name}} pack API. Do not edit.
 
 import type { {{tracker_type}}ViewMetricKey } from './{{compat_dsl_contract_module}}';
+{{#each views}}
+{{#if is_metric_series}}
+{{#if point_type}}
+import type { {{point_type}} } from './{{../core_api_contract_module}}';
+{{else}}
+import type { PackMetricPoint } from './{{../core_api_contract_module}}';
+{{/if}}
+{{/if}}
+{{#if is_distribution}}
+import type { PackDistributionItem } from './{{../core_api_contract_module}}';
+{{/if}}
+{{/each}}
 {{#if domain_types.[0]}}
 import type {
 {{#each domain_types}}

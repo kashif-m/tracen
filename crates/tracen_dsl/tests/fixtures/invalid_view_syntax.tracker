@@ -1,0 +1,11 @@
+tracker "bad" v1 {
+  fields {
+    exercise: text
+    calories: float
+  }
+  views {
+    view "summary" {
+      config = {"default_metric": "bad" unquoted_tail}
+    }
+  }
+}

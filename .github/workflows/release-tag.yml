@@ -1,5 +1,9 @@
 name: Release tag
 
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
 on:
   workflow_dispatch:
     inputs:
@@ -68,15 +72,15 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ inputs.version }}"
-          bash scripts/release-changelog.sh "$VERSION" --at HEAD --push --branch main
           git fetch origin main --tags
-          git checkout main
-          git reset --hard origin/main
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
             echo "Tag v$VERSION already exists."
             exit 1
           fi
+          bash scripts/release-changelog.sh "$VERSION" --at HEAD --push --branch main
+          git checkout main
+          git reset --hard origin/main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "v$VERSION" -m "Release v$VERSION" HEAD
           git push origin "v$VERSION"

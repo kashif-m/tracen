@@ -1,0 +1,29 @@
+[
+  {
+    "event_id": "e1",
+    "ts": 1704067200000,
+    "payload": {
+      "exercise": "run",
+      "distance": 4,
+      "calories": 220.0
+    }
+  },
+  {
+    "event_id": "e2",
+    "ts": 1704067260000,
+    "payload": {
+      "exercise": "run",
+      "distance": 6,
+      "calories": 330.0
+    }
+  },
+  {
+    "event_id": "e3",
+    "ts": 1704067320000,
+    "payload": {
+      "exercise": "lift",
+      "distance": null,
+      "calories": 150.0
+    }
+  }
+]

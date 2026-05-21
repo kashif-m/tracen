@@ -17,10 +17,20 @@ clippy:
 test:
 	cargo test --workspace
 
+snapshot-check:
+	cargo test -p tracen_dsl --test characterization
+	cargo test -p tracen_engine --test characterization
+	cargo test -p tracen_pack_codegen --test characterization
+
+snapshot-update:
+	TRACEN_UPDATE_SNAPSHOTS=1 cargo test -p tracen_dsl --test characterization
+	TRACEN_UPDATE_SNAPSHOTS=1 cargo test -p tracen_engine --test characterization
+	TRACEN_UPDATE_SNAPSHOTS=1 cargo test -p tracen_pack_codegen --test characterization
+
 doc:
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
-check: fmt-check clippy test doc
+check: fmt-check clippy snapshot-check test doc
 
 publish-check:
 	cargo check --workspace
@@ -81,6 +91,16 @@ bump arg1="up" arg2="patch":
 	git add Cargo.toml Cargo.lock; \
 	git commit -m "chore: bump $mode $level version" >/dev/null; \
 	echo "tracen workspace version: $old -> $new"
+
+release-tag:
+	@echo "release-tag is deprecated. Use workflow release-tag.yml instead."
+	@exit 1
+
+release-changelog tag:
+	@bash scripts/release-changelog.sh "{{tag}}"
+
+release-changelog-push tag branch="main":
+	@bash scripts/release-changelog.sh "{{tag}}" --push --branch "{{branch}}"
 
 publish-dry-run:
 	@for pkg in {{publish_order}}; do \

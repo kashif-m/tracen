@@ -1,0 +1,29 @@
+tracker "workout_tracker" v1 {
+  fields {
+    exercise: text
+    duration: int optional
+    calories: float
+  }
+
+  derives {
+    is_high = if calories > 300 then 1 else 0
+  }
+
+  metrics {
+    total_calories = sum(calories) over all_time
+    total_duration = sum(duration) over all_time
+    workout_count = count() over all_time
+  }
+
+  alerts {
+    has_high = is_high
+  }
+
+  event_plans {}
+
+  views {
+    view "summary" {
+      config = {"default_metric":"total_calories","query_type":"SummaryQuery","response_type":"SummaryResponse","result_kind":"single","metrics":{"total_calories":{"metric":"total_calories","label":"Total Calories"}}}
+    }
+  }
+}

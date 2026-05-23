@@ -29,5 +29,6 @@ jobs:
 
       - name: Append changelog entry if needed
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.client_payload.tag || github.ref_name }}
         run: just workflow-changelog-on-tag

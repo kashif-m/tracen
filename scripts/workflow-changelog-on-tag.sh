@@ -14,6 +14,15 @@ if [[ ! "$TAG" == v[0-9]* ]]; then
   exit 1
 fi
 
+if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+  echo "GITHUB_TOKEN is required."
+  exit 1
+fi
+
+git config user.name "github-actions[bot]"
+git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
 git fetch origin main --tags
 
 if ! git rev-parse -q --verify "${TAG}^{commit}" >/dev/null; then

@@ -70,9 +70,8 @@ if [[ ! -f "$CHANGELOG_PATH" ]]; then
 fi
 
 if [[ -n "$PUSH_TO_BRANCH" ]]; then
-  git fetch origin "$PUSH_TO_BRANCH":"$PUSH_TO_BRANCH"
-  git checkout "$PUSH_TO_BRANCH"
-  git merge --ff-only "origin/$PUSH_TO_BRANCH"
+  git fetch origin "refs/heads/$PUSH_TO_BRANCH:refs/remotes/origin/$PUSH_TO_BRANCH"
+  git checkout -B "$PUSH_TO_BRANCH" "origin/$PUSH_TO_BRANCH"
 fi
 
 VERSION="${TAG#v}"

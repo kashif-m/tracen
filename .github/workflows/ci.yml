@@ -74,7 +74,7 @@ jobs:
   rust:
     name: rust
     needs: changes
-    if: ${{ github.event_name == 'push' || needs.changes.outputs.ci == 'true' || needs.changes.outputs.rust == 'true' }}
+    if: ${{ needs.changes.outputs.ci == 'true' || needs.changes.outputs.rust == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -101,7 +101,7 @@ jobs:
   scripts:
     name: scripts
     needs: changes
-    if: ${{ github.event_name == 'push' || needs.changes.outputs.ci == 'true' || needs.changes.outputs.scripts == 'true' }}
+    if: ${{ needs.changes.outputs.ci == 'true' || needs.changes.outputs.scripts == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -116,7 +116,7 @@ jobs:
   ts:
     name: ts
     needs: changes
-    if: ${{ github.event_name == 'push' || needs.changes.outputs.ci == 'true' || needs.changes.outputs.ts == 'true' }}
+    if: ${{ needs.changes.outputs.ci == 'true' || needs.changes.outputs.ts == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -131,7 +131,7 @@ jobs:
   security-audit:
     name: security-audit
     needs: changes
-    if: ${{ github.event_name == 'push' || needs.changes.outputs.ci == 'true' || needs.changes.outputs.audit == 'true' }}
+    if: ${{ needs.changes.outputs.ci == 'true' || needs.changes.outputs.audit == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

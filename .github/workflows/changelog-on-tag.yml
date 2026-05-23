@@ -1,6 +1,11 @@
 name: Changelog on tag
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to generate changelog for, for example v0.1.7
+        required: true
   repository_dispatch:
     types:
       - release-tagged
@@ -10,9 +15,10 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
-  group: changelog-${{ github.event.client_payload.tag || github.ref_name }}
+  group: changelog-${{ github.event.client_payload.tag || inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -24,11 +30,12 @@ jobs:
         with:
           fetch-depth: 0
           ref: main
+          token: ${{ github.token }}
           persist-credentials: false
       - uses: taiki-e/install-action@just
 
       - name: Append changelog entry if needed
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.client_payload.tag || github.ref_name }}
+          RELEASE_TAG: ${{ github.event.client_payload.tag || inputs.tag || github.ref_name }}
         run: just workflow-changelog-on-tag

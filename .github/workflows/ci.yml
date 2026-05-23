@@ -24,12 +24,14 @@ jobs:
       pull-requests: read
     outputs:
       ci: ${{ steps.filter.outputs.ci }}
+      scripts: ${{ steps.filter.outputs.scripts }}
       rust: ${{ steps.filter.outputs.rust }}
       ts: ${{ steps.filter.outputs.ts }}
       audit: ${{ steps.filter.outputs.audit }}
     steps:
       - uses: actions/checkout@v4
         with:
+          token: ${{ github.token }}
           persist-credentials: false
 
       - uses: dorny/paths-filter@v3
@@ -39,6 +41,8 @@ jobs:
             ci:
               - '.github/workflows/**'
               - 'justfile'
+
+            scripts:
               - 'scripts/**'
 
             rust:
@@ -75,6 +79,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          token: ${{ github.token }}
           persist-credentials: false
       - uses: taiki-e/install-action@just
 
@@ -93,6 +98,21 @@ jobs:
       - name: Rust docs
         run: just doc
 
+  scripts:
+    name: scripts
+    needs: changes
+    if: ${{ github.event_name == 'push' || needs.changes.outputs.ci == 'true' || needs.changes.outputs.scripts == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ github.token }}
+          persist-credentials: false
+      - uses: taiki-e/install-action@just
+
+      - name: Script checks
+        run: just workflow-scripts-check
+
   ts:
     name: ts
     needs: changes
@@ -101,6 +121,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          token: ${{ github.token }}
           persist-credentials: false
       - uses: taiki-e/install-action@just
 
@@ -115,6 +136,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          token: ${{ github.token }}
           persist-credentials: false
       - uses: taiki-e/install-action@just
       - uses: taiki-e/install-action@cargo-audit
@@ -128,6 +150,7 @@ jobs:
     needs:
       - changes
       - rust
+      - scripts
       - ts
       - security-audit
     if: always()
@@ -135,8 +158,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          token: ${{ github.token }}
           persist-credentials: false
       - uses: taiki-e/install-action@just
 
       - name: Verify CI result
-        run: just workflow-ci-result "${{ needs.changes.result }}" "${{ needs.rust.result }}" "${{ needs.ts.result }}" "${{ needs.security-audit.result }}"
+        run: just workflow-ci-result "${{ needs.changes.result }}" "${{ needs.rust.result }}" "${{ needs.scripts.result }}" "${{ needs.ts.result }}" "${{ needs.security-audit.result }}"

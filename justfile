@@ -113,8 +113,12 @@ workflow-changelog-on-tag:
 workflow-ts-check:
 	bash scripts/workflow-ts-check.sh
 
-workflow-ci-result changes rust ts audit:
-	bash scripts/workflow-ci-result.sh "{{changes}}" "{{rust}}" "{{ts}}" "{{audit}}"
+workflow-scripts-check:
+	bash -n scripts/*.sh
+	just --list >/dev/null
+
+workflow-ci-result changes rust scripts ts audit:
+	bash scripts/workflow-ci-result.sh "{{changes}}" "{{rust}}" "{{scripts}}" "{{ts}}" "{{audit}}"
 
 publish-dry-run:
 	@for pkg in {{publish_order}}; do \

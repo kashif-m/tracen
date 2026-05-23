@@ -1,90 +1,33 @@
 name: Release tag
 
-concurrency:
-  group: release-${{ inputs.version }}
-  cancel-in-progress: false
-
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to release (for example: 0.1.7)"
-        required: true
-      confirm:
-        description: 'Type "yes" to create release'
-        required: true
-        default: "no"
-      publish_dry_run:
-        description: "Run publish dry-run check before release"
-        required: false
-        default: "true"
+  workflow_run:
+    workflows:
+      - Tracen CI
+    types:
+      - completed
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-tag-main
+  cancel-in-progress: false
 
 jobs:
   tag:
+    name: tag
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    if: startsWith(github.ref, 'refs/heads/main')
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
       - uses: taiki-e/install-action@just
-      - name: Ensure confirmation
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
-            echo "This workflow is dispatch-only."
-            exit 1
-          fi
-          if [ "${{ inputs.confirm }}" != "yes" ]; then
-            echo "Release not confirmed."
-            exit 1
-          fi
-      - name: Validate before release
-        run: |
-          set -euo pipefail
-          VERSION="${{ inputs.version }}"
-          if [ -z "$VERSION" ]; then
-            echo "Version input is required."
-            exit 1
-          fi
-          WORKSPACE_VERSION="$(
-            awk '
-              $1 == "[workspace.package]" { in_ws = 1; next }
-              /^\[/ { if ($0 != "[workspace.package]") in_ws = 0 }
-              in_ws && $1 == "version" && $2 == "=" {
-                gsub(/\"/, "", $3)
-                print $3
-                exit
-              }
-            ' Cargo.toml
-          )"
-          if [ "$VERSION" != "$WORKSPACE_VERSION" ]; then
-            echo "Version mismatch: workflow input '$VERSION' != workspace version '$WORKSPACE_VERSION'."
-            exit 1
-          fi
-          just check
-          if [ "${{ inputs.publish_dry_run }}" = "true" ]; then
-            just publish-dry-run
-          fi
-      - name: Update changelog on main and create release tag
-        run: |
-          set -euo pipefail
-          VERSION="${{ inputs.version }}"
-          git fetch origin main --tags
-          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
-            echo "Tag v$VERSION already exists."
-            exit 1
-          fi
-          bash scripts/release-changelog.sh "$VERSION" --at HEAD --push --branch main
-          git checkout main
-          git reset --hard origin/main
-          if ! grep -Fq "## [$VERSION]" CHANGELOG.md; then
-            echo "CHANGELOG.md does not contain release section for $VERSION."
-            exit 1
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "v$VERSION" -m "Release v$VERSION" HEAD
-          git push origin "v$VERSION"
+
+      - name: Create release tag if needed
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: just workflow-release-tag

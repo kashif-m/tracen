@@ -29,6 +29,8 @@ jobs:
       audit: ${{ steps.filter.outputs.audit }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: dorny/paths-filter@v3
         id: filter
@@ -72,22 +74,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: taiki-e/install-action@just
 
       - name: Rust fmt
-        run: cargo fmt --all --check
+        run: just fmt-check
 
       - name: Rust clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: just clippy
 
       - name: Snapshot characterization tests
         run: just snapshot-check
 
       - name: Rust tests
-        run: cargo test --workspace
+        run: just test
 
       - name: Rust docs
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+        run: just doc
 
   ts:
     name: ts
@@ -96,30 +100,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@just
 
       - name: TypeScript checks
-        run: |
-          set -euo pipefail
-
-          if [ ! -f package.json ]; then
-            echo "No root package.json found; generated TypeScript is covered by Rust pack-codegen snapshots."
-            exit 0
-          fi
-
-          if [ -f pnpm-lock.yaml ]; then
-            corepack enable
-            pnpm install --frozen-lockfile
-            pnpm run typecheck --if-present
-            pnpm test --if-present
-          elif [ -f package-lock.json ]; then
-            npm ci
-            npm run typecheck --if-present
-            npm test --if-present
-          else
-            npm install
-            npm run typecheck --if-present
-            npm test --if-present
-          fi
+        run: just workflow-ts-check
 
   security-audit:
     name: security-audit
@@ -128,10 +114,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@just
       - uses: taiki-e/install-action@cargo-audit
 
       - name: Cargo audit
-        run: cargo audit
+        run: just audit
         continue-on-error: true
 
   pipeline:
@@ -144,23 +133,10 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@just
+
       - name: Verify CI result
-        run: |
-          set -euo pipefail
-
-          check_result() {
-            name="$1"
-            result="$2"
-
-            echo "$name => $result"
-
-            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
-              echo "$name failed with result: $result"
-              exit 1
-            fi
-          }
-
-          check_result "changes" "${{ needs.changes.result }}"
-          check_result "rust" "${{ needs.rust.result }}"
-          check_result "ts" "${{ needs.ts.result }}"
-          check_result "security-audit" "${{ needs.security-audit.result }}"
+        run: just workflow-ci-result "${{ needs.changes.result }}" "${{ needs.rust.result }}" "${{ needs.ts.result }}" "${{ needs.security-audit.result }}"

@@ -32,6 +32,9 @@ doc:
 
 check: fmt-check clippy snapshot-check test doc
 
+audit:
+	cargo audit
+
 publish-check:
 	cargo check --workspace
 
@@ -93,14 +96,25 @@ bump arg1="up" arg2="patch":
 	echo "tracen workspace version: $old -> $new"
 
 release-tag:
-	@echo "release-tag is deprecated. Use workflow release-tag.yml instead."
-	@exit 1
+	bash scripts/release-tag-if-needed.sh
 
 release-changelog tag:
 	@bash scripts/release-changelog.sh "{{tag}}"
 
 release-changelog-push tag branch="main":
 	@bash scripts/release-changelog.sh "{{tag}}" --push --branch "{{branch}}"
+
+workflow-release-tag:
+	bash scripts/workflow-release-tag.sh
+
+workflow-changelog-on-tag:
+	bash scripts/workflow-changelog-on-tag.sh
+
+workflow-ts-check:
+	bash scripts/workflow-ts-check.sh
+
+workflow-ci-result changes rust ts audit:
+	bash scripts/workflow-ci-result.sh "{{changes}}" "{{rust}}" "{{ts}}" "{{audit}}"
 
 publish-dry-run:
 	@for pkg in {{publish_order}}; do \

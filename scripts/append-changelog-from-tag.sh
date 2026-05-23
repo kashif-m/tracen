@@ -98,8 +98,7 @@ PREVIOUS_TAG="$(git describe --tags --match 'v[0-9]*' --abbrev=0 "${AT}^{commit}
 if [[ -n "$PREVIOUS_TAG" ]]; then
   LOG_RANGE="${PREVIOUS_TAG}..${AT}"
 else
-  ROOT_COMMIT="$(git rev-list --max-parents=0 "${AT}^{commit}")"
-  LOG_RANGE="${ROOT_COMMIT}..${AT}"
+  LOG_RANGE="${AT}"
 fi
 
 mapfile -t CHANGE_LINES < <(git log --pretty='- %s' "$LOG_RANGE")

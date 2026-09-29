@@ -5,7 +5,7 @@ pub mod query_constraints;
 pub use query_constraints::QueryConstraints;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -20,6 +20,8 @@ pub enum EvalError {
     TypeMismatch(&'static str),
     #[error("division by zero")]
     DivisionByZero,
+    #[error("non-finite numeric result")]
+    NonFiniteResult,
 }
 
 /// Result alias for expression evaluation.
@@ -111,6 +113,7 @@ pub enum ConditionExpr {
 /// Scalar expressions supporting literals, field lookups, arithmetic, and conditionals.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ScalarExpr {
+    Null,
     Number(f64),
     Bool(bool),
     String(String),
@@ -130,6 +133,8 @@ pub enum ScalarExpr {
 impl ScalarExpr {
     pub fn evaluate(&self, event: &NormalizedEvent) -> EvalResult<ScalarValue> {
         match self {
+            ScalarExpr::Null => Ok(ScalarValue::Null),
+            ScalarExpr::Number(v) if !v.is_finite() => Err(EvalError::NonFiniteResult),
             ScalarExpr::Number(v) => Ok(ScalarValue::Number(*v)),
             ScalarExpr::Bool(v) => Ok(ScalarValue::Bool(*v)),
             ScalarExpr::String(v) => Ok(ScalarValue::Text(v.clone())),
@@ -160,6 +165,9 @@ impl ScalarExpr {
                     }
                 };
 
+                if !result.is_finite() {
+                    return Err(EvalError::NonFiniteResult);
+                }
                 Ok(ScalarValue::Number(result))
             }
             ScalarExpr::Conditional {
@@ -306,6 +314,8 @@ pub enum AggregationFunc {
     Min,
     Avg,
     Count,
+    DistinctCount,
+    WeightedAvg,
 }
 
 /// Grouping specification for aggregations.
@@ -319,6 +329,8 @@ pub enum GroupExpr {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AggregationSpec {
     pub func: AggregationFunc,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<ScalarExpr>,
     pub target: Option<ScalarExpr>,
     pub filter: Option<ConditionExpr>,
     pub group_by: Vec<GroupExpr>,
@@ -410,11 +422,20 @@ fn evaluate_aggregation(
                 let expr = spec.target.as_ref().ok_or(EvalError::TypeMismatch(
                     "aggregation target required for non-count metrics",
                 ))?;
-                expr.evaluate(event)?.as_f64()
+                Some(expr.evaluate(event)?)
             }
         };
 
-        bucket.update(spec.func, target_value)?;
+        let weight = if matches!(spec.func, AggregationFunc::WeightedAvg) {
+            spec.weight
+                .as_ref()
+                .ok_or(EvalError::TypeMismatch("weighted_avg requires a weight"))?
+                .evaluate(event)?
+                .as_f64()
+        } else {
+            None
+        };
+        bucket.update(spec.func, target_value, weight)?;
     }
 
     if buckets.is_empty() && !spec.has_grouping() {
@@ -508,6 +529,11 @@ impl AggregationSpec {
 #[derive(Debug)]
 enum BucketState {
     Count(usize),
+    Distinct(HashSet<String>),
+    Weighted {
+        weighted_sum: f64,
+        weight_sum: f64,
+    },
     Number {
         count: usize,
         sum: f64,
@@ -520,7 +546,13 @@ impl BucketState {
     fn round_metric_value(value: f64, precision: u32) -> f64 {
         let precision = precision.min(18);
         let factor = 10f64.powi(precision as i32);
-        let rounded = (value * factor).round() / factor;
+        // Large finite values already have no representable fractional digits.
+        let scaled = value * factor;
+        let rounded = if scaled.is_finite() {
+            scaled.round() / factor
+        } else {
+            value
+        };
         if rounded == -0.0 {
             0.0
         } else {
@@ -531,6 +563,11 @@ impl BucketState {
     fn new(func: AggregationFunc) -> Self {
         match func {
             AggregationFunc::Count => BucketState::Count(0),
+            AggregationFunc::DistinctCount => BucketState::Distinct(HashSet::new()),
+            AggregationFunc::WeightedAvg => BucketState::Weighted {
+                weighted_sum: 0.0,
+                weight_sum: 0.0,
+            },
             _ => BucketState::Number {
                 count: 0,
                 sum: 0.0,
@@ -540,10 +577,63 @@ impl BucketState {
         }
     }
 
-    fn update(&mut self, func: AggregationFunc, value: Option<f64>) -> EvalResult<()> {
+    fn update(
+        &mut self,
+        func: AggregationFunc,
+        value: Option<ScalarValue>,
+        weight: Option<f64>,
+    ) -> EvalResult<()> {
         match (self, func) {
             (BucketState::Count(count), AggregationFunc::Count) => {
                 *count += 1;
+            }
+            (BucketState::Distinct(values), AggregationFunc::DistinctCount) => {
+                match value {
+                    None | Some(ScalarValue::Null) => {}
+                    Some(ScalarValue::Number(v)) => {
+                        if !v.is_finite() {
+                            return Err(EvalError::NonFiniteResult);
+                        }
+                        // Match numeric equality: 0 and -0 identify the same value.
+                        values.insert(json!(if v == 0.0 { 0.0 } else { v }).to_string());
+                    }
+                    Some(value) => {
+                        values.insert(value.to_json().to_string());
+                    }
+                }
+            }
+            (
+                BucketState::Weighted {
+                    weighted_sum,
+                    weight_sum,
+                },
+                AggregationFunc::WeightedAvg,
+            ) => {
+                if let Some(weight) = weight {
+                    if !weight.is_finite() {
+                        return Err(EvalError::NonFiniteResult);
+                    }
+                    if weight < 0.0 {
+                        return Err(EvalError::TypeMismatch(
+                            "weighted_avg weight must be nonnegative",
+                        ));
+                    }
+                    if let Some(value) = value
+                        .and_then(|value| value.as_f64())
+                        .filter(|_| weight > 0.0)
+                    {
+                        let next_sum = *weighted_sum + value * weight;
+                        let next_weight = *weight_sum + weight;
+                        if !next_sum.is_finite()
+                            || !next_weight.is_finite()
+                            || !(next_sum / next_weight).is_finite()
+                        {
+                            return Err(EvalError::NonFiniteResult);
+                        }
+                        *weighted_sum = next_sum;
+                        *weight_sum = next_weight;
+                    }
+                }
             }
             (
                 BucketState::Number {
@@ -554,9 +644,18 @@ impl BucketState {
                 },
                 _,
             ) => {
-                if let Some(v) = value {
+                if let Some(v) = value.and_then(|value| value.as_f64()) {
+                    if !v.is_finite() {
+                        return Err(EvalError::NonFiniteResult);
+                    }
+                    if matches!(func, AggregationFunc::Sum | AggregationFunc::Avg) {
+                        let next_sum = *sum + v;
+                        if !next_sum.is_finite() {
+                            return Err(EvalError::NonFiniteResult);
+                        }
+                        *sum = next_sum;
+                    }
                     *count += 1;
-                    *sum += v;
                     *max = Some(max.map_or(v, |current| current.max(v)));
                     *min = Some(min.map_or(v, |current| current.min(v)));
                 } else {
@@ -571,6 +670,23 @@ impl BucketState {
     fn finalize(self, func: AggregationFunc, precision: u32) -> Value {
         match (self, func) {
             (BucketState::Count(count), AggregationFunc::Count) => json!(count),
+            (BucketState::Distinct(values), AggregationFunc::DistinctCount) => json!(values.len()),
+            (
+                BucketState::Weighted {
+                    weighted_sum,
+                    weight_sum,
+                },
+                AggregationFunc::WeightedAvg,
+            ) => {
+                if weight_sum > 0.0 {
+                    json!(Self::round_metric_value(
+                        weighted_sum / weight_sum,
+                        precision
+                    ))
+                } else {
+                    Value::Null
+                }
+            }
             (BucketState::Number { sum, .. }, AggregationFunc::Sum) => {
                 json!(Self::round_metric_value(sum, precision))
             }
@@ -589,9 +705,7 @@ impl BucketState {
                 .map_or(Value::Null, |v| {
                     json!(Self::round_metric_value(v, precision))
                 }),
-            (BucketState::Number { .. }, AggregationFunc::Count) | (BucketState::Count(_), _) => {
-                Value::Null
-            }
+            _ => Value::Null,
         }
     }
 }
@@ -656,6 +770,7 @@ mod tests {
         ];
 
         let spec = AggregationSpec {
+            weight: None,
             func: AggregationFunc::Sum,
             target: Some(ScalarExpr::Field(FieldPath::from("payload.value_a"))),
             filter: None,
@@ -691,6 +806,7 @@ mod tests {
         ];
 
         let avg_spec = AggregationSpec {
+            weight: None,
             func: AggregationFunc::Avg,
             target: Some(ScalarExpr::Field(FieldPath::from("payload.value_a"))),
             filter: None,
@@ -707,6 +823,7 @@ mod tests {
         assert_eq!(avg_map.get(r#"["segment_a"]"#), Some(&json!(1.67)));
 
         let sum_spec = AggregationSpec {
+            weight: None,
             func: AggregationFunc::Sum,
             target: Some(ScalarExpr::Field(FieldPath::from("payload.value_a"))),
             filter: None,
@@ -731,6 +848,7 @@ mod tests {
         ];
 
         let spec = AggregationSpec {
+            weight: None,
             func: AggregationFunc::Avg,
             target: Some(ScalarExpr::Field(FieldPath::from("payload.value_a"))),
             filter: None,
@@ -767,6 +885,7 @@ mod tests {
         ];
 
         let spec = AggregationSpec {
+            weight: None,
             func: AggregationFunc::Sum,
             target: Some(ScalarExpr::Field(FieldPath::from("payload.value_a"))),
             filter: None,
@@ -808,6 +927,7 @@ mod tests {
         ];
 
         let spec = AggregationSpec {
+            weight: None,
             func: AggregationFunc::Count,
             target: None,
             filter: None,

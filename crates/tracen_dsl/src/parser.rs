@@ -26,10 +26,12 @@ pub fn parse_tracker(input: &str) -> TrackerResult<TrackerAst> {
     let body = extract_braced(src, body_start)?.trim();
 
     let (name, version) = parse_header(header)?;
+    validate_sections(body)?;
 
     let fields = parse_fields(section_body(body, "fields")?)?;
     let derives = parse_derives(section_body_optional(body, "derive"))?;
     let metrics = parse_metrics(section_body_optional(body, "metrics"))?;
+    let validations = parse_validations(section_body_optional(body, "validations"))?;
     let alerts = parse_alerts(section_body_optional(body, "alerts"))?;
     let planning = parse_planning(section_body_optional(body, "planning"))?;
     let event_plans = parse_event_plans(section_body_optional(body, "event_plans"))?;
@@ -49,6 +51,7 @@ pub fn parse_tracker(input: &str) -> TrackerResult<TrackerAst> {
         derives,
         metrics,
         alerts,
+        validations,
         planning,
         event_plans,
         views,
@@ -60,6 +63,43 @@ pub fn parse_tracker(input: &str) -> TrackerResult<TrackerAst> {
         extern_ts,
         compat,
     })
+}
+
+fn validate_sections(mut body: &str) -> TrackerResult<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    while !body.trim().is_empty() {
+        body = body.trim_start();
+        let open = body
+            .find('{')
+            .ok_or_else(|| parse_error("expected tracker section"))?;
+        let name = body[..open].trim();
+        if !matches!(
+            name,
+            "fields"
+                | "derive"
+                | "metrics"
+                | "alerts"
+                | "validations"
+                | "planning"
+                | "event_plans"
+                | "views"
+                | "catalog"
+                | "read_models"
+                | "types"
+                | "helpers"
+                | "imports"
+                | "extern_ts"
+                | "compat"
+        ) {
+            return Err(parse_error(format!("unknown tracker section '{name}'")));
+        }
+        if !seen.insert(name) {
+            return Err(parse_error(format!("duplicate tracker section '{name}'")));
+        }
+        let content = extract_braced(body, open)?;
+        body = &body[open + content.len() + 2..];
+    }
+    Ok(())
 }
 
 fn parse_header(header: &str) -> TrackerResult<(String, TrackerVersion)> {
@@ -164,6 +204,33 @@ fn parse_metrics(body: Option<&str>) -> TrackerResult<Vec<MetricDefinition>> {
         }
         None => Ok(Vec::new()),
     }
+}
+
+fn parse_validations(body: Option<&str>) -> TrackerResult<Vec<tracen_ir::ValidationDefinition>> {
+    let Some(body) = body else {
+        return Ok(Vec::new());
+    };
+    statement_lines(body)
+        .into_iter()
+        .map(|line| {
+            let (name, raw) = line
+                .split_once('=')
+                .ok_or_else(|| parse_error("validation requires name = condition"))?;
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(parse_error("validation name is required"));
+            }
+            let mut parser = ExprParser::new(raw.trim())?;
+            let condition = parser.parse_condition()?;
+            if !parser.is_eof() {
+                return Err(parse_error("unexpected token after validation condition"));
+            }
+            Ok(tracen_ir::ValidationDefinition {
+                name: name.to_string(),
+                condition,
+            })
+        })
+        .collect()
 }
 
 fn parse_alerts(body: Option<&str>) -> TrackerResult<Vec<AlertDefinition>> {
@@ -913,10 +980,24 @@ fn parse_aggregation(rhs: &str) -> TrackerResult<AggregationDefinition> {
     let target_body = extract_braced_like(rhs, func_end, '(', ')')?;
     let mut tail = rhs[(func_end + target_body.len() + 2)..].trim();
 
-    let target = if target_body.trim().is_empty() {
-        None
+    let (target, weight) = if matches!(func, AggregationFunc::WeightedAvg) {
+        let args = split_top_level(target_body.trim(), ',');
+        if args.len() != 2 || args.iter().any(|arg| arg.trim().is_empty()) {
+            return Err(parse_error("weighted_avg requires value and weight"));
+        }
+        (
+            Some(parse_expression(args[0].trim())?),
+            Some(parse_expression(args[1].trim())?),
+        )
     } else {
-        Some(parse_expression(target_body.trim())?)
+        (
+            if target_body.trim().is_empty() {
+                None
+            } else {
+                Some(parse_expression(target_body.trim())?)
+            },
+            None,
+        )
     };
 
     let mut group_by = Vec::new();
@@ -942,10 +1023,15 @@ fn parse_aggregation(rhs: &str) -> TrackerResult<AggregationDefinition> {
     if let Some(grain) = tail.strip_prefix("over") {
         let grain = grain.trim();
         over = Some(parse_time_grain(grain)?);
+    } else if !tail.is_empty() {
+        return Err(parse_error(format!(
+            "unexpected aggregation syntax: {tail}"
+        )));
     }
 
     Ok(AggregationDefinition {
         func,
+        weight,
         target,
         group_by,
         over,
@@ -959,6 +1045,8 @@ fn parse_aggregation_func(raw: &str) -> TrackerResult<AggregationFunc> {
         "min" => Ok(AggregationFunc::Min),
         "avg" => Ok(AggregationFunc::Avg),
         "count" => Ok(AggregationFunc::Count),
+        "distinct_count" => Ok(AggregationFunc::DistinctCount),
+        "weighted_avg" => Ok(AggregationFunc::WeightedAvg),
         other => Err(parse_error(format!(
             "unsupported aggregation function: {other}"
         ))),
@@ -1177,7 +1265,9 @@ impl ExprParser {
                     Ok(Expression::Field(name))
                 }
             }
-            Some(Token::LBrace) => self.parse_object_literal(),
+            Some(Token::LBrace) => Err(parse_error(
+                "object literals are not supported in scalar expressions",
+            )),
             Some(Token::Bang) => {
                 let expr = self.parse_expr(100)?;
                 Ok(Expression::Function {
@@ -1186,62 +1276,6 @@ impl ExprParser {
                 })
             }
             other => Err(parse_error(format!("unexpected token: {:?}", other))),
-        }
-    }
-
-    fn parse_object_literal(&mut self) -> TrackerResult<Expression> {
-        let mut depth = 1usize;
-        let mut raw = String::from("{");
-        while let Some(token) = self.next() {
-            match token {
-                Token::LBrace => {
-                    depth += 1;
-                    raw.push('{');
-                }
-                Token::RBrace => {
-                    depth -= 1;
-                    raw.push('}');
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                Token::Colon => raw.push(':'),
-                Token::Comma => raw.push(','),
-                Token::Ident(value) => raw.push_str(&value),
-                Token::Number(value) => raw.push_str(&value),
-                Token::Str(value) => {
-                    raw.push('"');
-                    raw.push_str(&value);
-                    raw.push('"');
-                }
-                Token::True => raw.push_str("true"),
-                Token::False => raw.push_str("false"),
-                Token::Null => raw.push_str("null"),
-                Token::Plus => raw.push('+'),
-                Token::Minus => raw.push('-'),
-                Token::Star => raw.push('*'),
-                Token::Slash => raw.push('/'),
-                Token::Percent => raw.push('%'),
-                Token::AndAnd => raw.push_str("&&"),
-                Token::OrOr => raw.push_str("||"),
-                Token::EqEq => raw.push_str("=="),
-                Token::NotEq => raw.push_str("!="),
-                Token::Gt => raw.push('>'),
-                Token::Gte => raw.push_str(">="),
-                Token::Lt => raw.push('<'),
-                Token::Lte => raw.push_str("<="),
-                Token::Bang => raw.push('!'),
-                Token::LParen => raw.push('('),
-                Token::RParen => raw.push(')'),
-                Token::If => raw.push_str("if"),
-                Token::Then => raw.push_str("then"),
-                Token::Else => raw.push_str("else"),
-            }
-        }
-        if depth == 0 {
-            Ok(Expression::Text(raw))
-        } else {
-            Err(parse_error("unterminated object literal in expression"))
         }
     }
 

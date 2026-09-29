@@ -1,5 +1,5 @@
 {
-  "tracker_id": "workout_tracker_v1_0a73db9c",
+  "tracker_id": "workout_tracker_v1_ac3eb418",
   "tracker_id_override": null,
   "tracker_name": "workout_tracker",
   "version": {
@@ -7,7 +7,7 @@
     "minor": 0,
     "patch": 0
   },
-  "dsl": "tracker \"workout_tracker\" v1 {\n  fields {\n    exercise: text\n    duration: int optional\n    calories: float\n  }\n\n  derives {\n    is_high = if calories > 300 then 1 else 0\n  }\n\n  metrics {\n    total_calories = sum(calories) over all_time\n    total_duration = sum(duration) over all_time\n    workout_count = count() over all_time\n  }\n\n  alerts {\n    has_high = is_high\n  }\n\n  event_plans {}\n\n  views {\n    view \"summary\" {\n      config = {\"default_metric\":\"total_calories\",\"query_type\":\"SummaryQuery\",\"response_type\":\"SummaryResponse\",\"result_kind\":\"single\",\"metrics\":{\"total_calories\":{\"metric\":\"total_calories\",\"label\":\"Total Calories\"}}}\n    }\n  }\n}\n",
+  "dsl": "tracker \"workout_tracker\" v1 {\n  fields {\n    exercise: text\n    duration: int optional\n    calories: float\n  }\n\n  derive {\n    is_high = if calories > 300 then 1 else 0\n  }\n\n  metrics {\n    total_calories = sum(calories) over all_time\n    total_duration = sum(duration) over all_time\n    workout_count = count() over all_time\n  }\n\n  alerts {\n    has_high = is_high\n  }\n\n  event_plans {}\n\n  views {\n    view \"summary\" {\n      config = {\"default_metric\":\"total_calories\",\"query_type\":\"SummaryQuery\",\"response_type\":\"SummaryResponse\",\"result_kind\":\"single\",\"metrics\":{\"total_calories\":{\"metric\":\"total_calories\",\"label\":\"Total Calories\"}}}\n    }\n  }\n}\n",
   "fields": [
     {
       "name": "exercise",
@@ -31,7 +31,32 @@
       "reference": null
     }
   ],
-  "derives": [],
+  "derives": [
+    {
+      "name": "is_high",
+      "expr": {
+        "Conditional": {
+          "condition": {
+            "Comparison": {
+              "op": "Gt",
+              "left": {
+                "Field": "calories"
+              },
+              "right": {
+                "Int": 300
+              }
+            }
+          },
+          "then_expr": {
+            "Int": 1
+          },
+          "else_expr": {
+            "Int": 0
+          }
+        }
+      }
+    }
+  ],
   "metrics": [
     {
       "name": "total_calories",

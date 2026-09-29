@@ -6,6 +6,7 @@ use tracen_ir::{TrackerDefinition, TrackerDefinitionInput};
 
 pub mod ast;
 pub mod parser;
+mod validations;
 
 pub use ast::*;
 
@@ -26,6 +27,7 @@ pub fn compile(input: &str) -> TrackerResult<TrackerDefinition> {
         derives: ast.derives,
         metrics: ast.metrics,
         alerts: ast.alerts,
+        validations: ast.validations,
         planning: ast.planning,
         event_plans: ast.event_plans,
         views: ast.views,
@@ -45,6 +47,7 @@ pub fn parse(input: &str) -> TrackerResult<TrackerAst> {
 }
 
 fn validate_semantics(ast: &TrackerAst) -> TrackerResult<()> {
+    validations::validate(ast)?;
     let mut field_names = std::collections::BTreeSet::new();
     for field in &ast.fields {
         if !field_names.insert(field.name.clone()) {
@@ -57,6 +60,26 @@ fn validate_semantics(ast: &TrackerAst) -> TrackerResult<()> {
 
     let mut derive_names = std::collections::BTreeSet::new();
     for derive in &ast.derives {
+        if field_names.contains(&derive.name) {
+            return Err(TrackerError::new_simple(
+                ErrorCode::DslInvalidExpression,
+                format!("derive '{}' overwrites a declared input field", derive.name),
+            ));
+        }
+        for dependency in &ast.derives {
+            if dependency.name != derive.name
+                && !derive_names.contains(&dependency.name)
+                && references_ident(&derive.expr, &dependency.name)
+            {
+                return Err(TrackerError::new_simple(
+                    ErrorCode::DslInvalidExpression,
+                    format!(
+                        "derive '{}' must follow its dependency '{}'",
+                        derive.name, dependency.name
+                    ),
+                ));
+            }
+        }
         if !derive_names.insert(derive.name.clone()) {
             Err(TrackerError::new_simple(
                 ErrorCode::DslInvalidExpression,
@@ -70,6 +93,8 @@ fn validate_semantics(ast: &TrackerAst) -> TrackerResult<()> {
             ))?;
         }
     }
+
+    validations::validate_computations(ast)?;
 
     let mut metric_names = std::collections::BTreeSet::new();
     for metric in &ast.metrics {
@@ -590,6 +615,86 @@ fn references_ident_in_condition(condition: &tracen_ir::Condition, ident: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derives_cannot_overwrite_inputs_or_read_later_derives() {
+        for declarations in [
+            "amount = 0",
+            "first = second + 1\nsecond = amount * 2",
+            "first = second + 1\nsecond = first + 1",
+        ] {
+            let source = format!(
+                "tracker \"scope\" v1 {{ fields {{ amount: float }} derive {{ {declarations} }} }}"
+            );
+            let error = compile(&source).expect_err("unsafe derive compiled");
+            assert_eq!(error.code, ErrorCode::DslInvalidExpression);
+        }
+        compile("tracker \"scope\" v1 { fields { amount: float } derive { first = amount * 2\nsecond = first + 1 } }").unwrap();
+    }
+
+    #[test]
+    fn derives_validate_available_fields_and_scalar_types() {
+        for expression in [
+            "missing + 1",
+            "payload.missing",
+            "amount + label",
+            "if label > 0 then 1 else 0",
+            "unknown(amount)",
+            "event.missing",
+            "if amount > 0 then label else 0",
+        ] {
+            let source = format!("tracker \"scope\" v1 {{ fields {{ amount: float\nlabel: text }} derive {{ result = {expression} }} }}");
+            assert!(compile(&source).is_err(), "{expression}");
+        }
+        // Derived values are written into the payload only after all derives run.
+        assert!(compile("tracker \"scope\" v1 { fields { amount: float } derive { first = amount * 2\nsecond = payload.first + 1 } }").is_err());
+        compile("tracker \"scope\" v1 { fields { amount: float } derive { first = payload.amount * meta.multiplier\nsecond = first + event.ts } }").unwrap();
+    }
+
+    #[test]
+    fn metrics_validate_targets_operators_and_grouping() {
+        for metric in [
+            "sum(missing)",
+            "sum(label)",
+            "sum(amount % 2)",
+            "sum(unknown(amount))",
+            "sum()",
+            "count(amount)",
+            "sum(amount) by missing",
+        ] {
+            let source = format!("tracker \"scope\" v1 {{ fields {{ amount: float\nlabel: text }} metrics {{ result = {metric} over all_time }} }}");
+            let error = compile(&source).expect_err(metric);
+            assert_eq!(error.code, ErrorCode::DslInvalidExpression, "{metric}");
+        }
+        compile("tracker \"scope\" v1 { fields { amount: float } derive { doubled = amount * 2 } metrics { result = sum(payload.doubled) by event.id over all_time } }").unwrap();
+    }
+
+    #[test]
+    fn alerts_reject_unavailable_aggregate_scope_and_invalid_calls() {
+        for alert in [
+            "if total > 8 then true else false",
+            "missing",
+            "unknown(amount)",
+            "signal(42)",
+            "signal(\"a\", amount, amount)",
+        ] {
+            let source = format!("tracker \"scope\" v1 {{ fields {{ amount: float }} metrics {{ total = sum(amount) over all_time }} alerts {{ warning = {alert} }} }}");
+            let error = compile(&source).expect_err(alert);
+            assert_eq!(error.code, ErrorCode::DslInvalidExpression);
+        }
+        assert!(compile("tracker \"scope\" v1 { fields { amount: float } alerts { repeated = amount\nrepeated = amount } }").is_err());
+        compile("tracker \"scope\" v1 { fields { amount: float } derive { doubled = amount * 2 } alerts { warning = if payload.doubled > 8 then signal(\"HIGH\", doubled) else null } }").unwrap();
+    }
+
+    #[test]
+    fn object_expressions_are_not_silently_converted_to_source_text() {
+        assert!(compile(r#"tracker "scope" v1 { fields { amount: float } alerts { warning = signal("HIGH", { level: amount }) } }"#).is_err());
+    }
+
+    #[test]
+    fn metrics_reject_unparsed_trailing_syntax() {
+        assert!(compile("tracker \"scope\" v1 { fields { amount: float } metrics { total = sum(amount) ignored } }").is_err());
+    }
 
     #[test]
     fn compile_sample_tracker() {

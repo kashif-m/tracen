@@ -30,17 +30,6 @@ fn ensure_tracker_id(
     }
 }
 
-fn normalize_payload(
-    definition: &TrackerDefinition,
-    payload: Value,
-    policy: PayloadValidationPolicy,
-) -> Result<Value, EngineError> {
-    let mut payload = payload;
-    validate_payload_fields(definition.fields(), &mut payload, policy)
-        .map_err(payload_validation_error)?;
-    Ok(payload)
-}
-
 pub(crate) fn parse_event_from_json(
     definition: &TrackerDefinition,
     event_json: &str,
@@ -88,14 +77,46 @@ pub(crate) fn build_event_from_parts(
     meta: Value,
     payload_policy: PayloadValidationPolicy,
 ) -> Result<NormalizedEvent, EngineError> {
-    let normalized_payload = normalize_payload(definition, payload, payload_policy)?;
-    Ok(NormalizedEvent::new(
-        event_id,
-        definition.tracker_id().clone(),
-        ts,
-        normalized_payload,
-        meta,
-    ))
+    let mut event =
+        NormalizedEvent::new(event_id, definition.tracker_id().clone(), ts, payload, meta);
+    validate_normalized_event(definition, &mut event, payload_policy)?;
+    Ok(event)
+}
+
+pub(crate) fn validate_normalized_event(
+    definition: &TrackerDefinition,
+    event: &mut NormalizedEvent,
+    payload_policy: PayloadValidationPolicy,
+) -> Result<(), EngineError> {
+    ensure_tracker_id(definition, event.tracker_id().clone())?;
+    if event.event_id().as_str().trim().is_empty() {
+        return Err(EngineError::EventValidation("event_id is required".into()));
+    }
+    if !event.meta().is_object() {
+        return Err(EngineError::EventValidation(
+            "meta must be a JSON object".into(),
+        ));
+    }
+    validate_payload_fields(definition.fields(), event.payload_mut(), payload_policy)
+        .map_err(payload_validation_error)?;
+    if matches!(
+        payload_policy,
+        PayloadValidationPolicy::Event | PayloadValidationPolicy::EventLax
+    ) {
+        for rule in definition.validations() {
+            let valid = crate::eval_condition(&rule.condition, event, &Default::default())
+                .map_err(|error| {
+                    EngineError::EventValidation(format!("validation '{}': {error}", rule.name))
+                })?;
+            if !valid {
+                return Err(EngineError::EventValidation(format!(
+                    "validation '{}' failed",
+                    rule.name
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn build_pack_event(
@@ -103,13 +124,14 @@ pub(crate) fn build_pack_event(
     event_id: EventId,
     ts: Timestamp,
     payload: Value,
+    meta: Value,
 ) -> Result<NormalizedEvent, EngineError> {
     build_event_from_parts(
         definition,
         event_id,
         ts,
         payload,
-        serde_json::json!({}),
+        meta,
         PayloadValidationPolicy::PackQueryLax,
     )
 }

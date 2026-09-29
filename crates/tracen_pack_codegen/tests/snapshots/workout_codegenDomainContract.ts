@@ -2,6 +2,10 @@
 
 import type { WorkoutCodegenPackCapabilities } from './workout_codegenPackCoreDomainContract';
 
+export type BrandedString = string;
+export type EventId = string;
+export type TrackerId = string;
+
 export type DomainJsonValue =
   | null
   | boolean

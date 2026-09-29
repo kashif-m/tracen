@@ -191,6 +191,13 @@ pub struct DeriveDefinition {
     pub expr: Expression,
 }
 
+/// A named invariant checked when an event is accepted.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ValidationDefinition {
+    pub name: String,
+    pub condition: Condition,
+}
+
 /// Supported time grains for aggregations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TimeGrain {
@@ -210,6 +217,8 @@ pub enum AggregationFunc {
     Min,
     Avg,
     Count,
+    DistinctCount,
+    WeightedAvg,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -243,6 +252,8 @@ pub enum GroupKeyEncoding {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AggregationDefinition {
     pub func: AggregationFunc,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<Expression>,
     pub target: Option<Expression>,
     pub group_by: Vec<GroupByDimension>,
     pub over: Option<TimeGrain>,
@@ -455,6 +466,8 @@ pub struct TrackerDefinition {
     derives: Vec<DeriveDefinition>,
     metrics: Vec<MetricDefinition>,
     alerts: Vec<AlertDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    validations: Vec<ValidationDefinition>,
     planning: Option<PlanningDefinition>,
     event_plans: Option<EventPlansDefinition>,
     #[serde(default)]
@@ -486,6 +499,8 @@ pub struct TrackerDefinitionInput {
     pub derives: Vec<DeriveDefinition>,
     pub metrics: Vec<MetricDefinition>,
     pub alerts: Vec<AlertDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub validations: Vec<ValidationDefinition>,
     pub planning: Option<PlanningDefinition>,
     pub event_plans: Option<EventPlansDefinition>,
     #[serde(default)]
@@ -517,6 +532,7 @@ impl TrackerDefinition {
             derives,
             metrics,
             alerts,
+            validations,
             planning,
             event_plans,
             views,
@@ -540,6 +556,7 @@ impl TrackerDefinition {
             derives,
             metrics,
             alerts,
+            validations,
             planning,
             event_plans,
             views,
@@ -583,6 +600,10 @@ impl TrackerDefinition {
 
     pub fn metrics(&self) -> &[MetricDefinition] {
         &self.metrics
+    }
+
+    pub fn validations(&self) -> &[ValidationDefinition] {
+        &self.validations
     }
 
     pub fn alerts(&self) -> &[AlertDefinition] {
@@ -758,42 +779,6 @@ pub struct Query {
     /// Group-key encoding strategy for grouped metric output.
     #[serde(default)]
     pub group_key_encoding: GroupKeyEncoding,
-}
-
-/// Mutable state container for incremental engine application.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EngineState {
-    tracker_id: TrackerId,
-    events: Vec<NormalizedEvent>,
-}
-
-impl EngineState {
-    pub fn new(tracker_id: TrackerId) -> Self {
-        Self {
-            tracker_id,
-            events: Vec::new(),
-        }
-    }
-
-    pub fn for_definition(def: &TrackerDefinition) -> Self {
-        Self::new(def.tracker_id().clone())
-    }
-
-    pub fn tracker_id(&self) -> &TrackerId {
-        &self.tracker_id
-    }
-
-    pub fn push(&mut self, event: NormalizedEvent) {
-        self.events.push(event);
-    }
-
-    pub fn total_events(&self) -> usize {
-        self.events.len()
-    }
-
-    pub fn events(&self) -> &[NormalizedEvent] {
-        &self.events
-    }
 }
 
 /// Engine output returned by stateless compute.

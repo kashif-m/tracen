@@ -44,9 +44,11 @@ pub struct PackGenModel {
     pub read_models: Vec<ReadModelModel>,
     pub event_plans_enabled: bool,
     pub api_types: Vec<TypeModel>,
+    pub compat_core_api_imports: Vec<String>,
     pub domain_types: Vec<TypeModel>,
     pub rust_types: Vec<TypeModel>,
     pub extern_ts_imports: Vec<ExternTsImportModel>,
+    pub default_identity_types: Vec<String>,
     pub helper_trait_name: String,
     pub helper_impl_type_name: String,
     pub generated_adapter_type_name: String,
@@ -152,6 +154,7 @@ pub struct TypeFieldModel {
 pub struct TypeVariantModel {
     pub value: String,
     pub rust_ident: String,
+    pub rust_literal: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -381,7 +384,7 @@ impl PackGenModel {
             .types()
             .iter()
             .map(|type_def| build_type_model(type_def, &extern_ts_map))
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         let type_model_by_name = type_models
             .iter()
             .map(|type_def| (type_def.name.as_str(), type_def))
@@ -489,6 +492,28 @@ impl PackGenModel {
             })
             .cloned()
             .collect::<Vec<_>>();
+        let locally_available = api_types
+            .iter()
+            .chain(&domain_types)
+            .map(|ty| ty.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let compat_core_api_imports = view_data
+            .views
+            .iter()
+            .filter_map(|view| {
+                if view.is_metric_series {
+                    Some(view.point_type.as_deref().unwrap_or("PackMetricPoint"))
+                } else if view.is_distribution {
+                    Some("PackDistributionItem")
+                } else {
+                    None
+                }
+            })
+            .filter(|name| !locally_available.contains(name))
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         validate_unique_api_contract_exports(
             &core_api_contract_module,
             &["PackMetricPoint", "PackDistributionItem"],
@@ -528,6 +553,17 @@ impl PackGenModel {
                 names: import.items.iter().map(|item| item.name.clone()).collect(),
             })
             .collect::<Vec<_>>();
+
+        let default_identity_types = ["BrandedString", "EventId", "TrackerId"]
+            .into_iter()
+            .filter(|name| {
+                !extern_ts_imports
+                    .iter()
+                    .any(|import| import.names.iter().any(|item| item == name))
+                    && !domain_types.iter().any(|item| item.name == *name)
+            })
+            .map(str::to_string)
+            .collect();
 
         let event_plans_enabled = def
             .event_plans()
@@ -583,9 +619,11 @@ impl PackGenModel {
             read_models,
             event_plans_enabled,
             api_types,
+            compat_core_api_imports,
             domain_types,
             rust_types,
             extern_ts_imports,
+            default_identity_types,
             helper_trait_name,
             helper_impl_type_name,
             generated_adapter_type_name,
@@ -1101,6 +1139,16 @@ fn build_extern_ts_rust_map(imports: &[ExternTsImportDefinition]) -> BTreeMap<St
         .collect()
 }
 
+// Serde's Option accepts omission/null and serializes None as null.
+fn render_optional_ts_type(type_ref: &str, optional: bool) -> String {
+    let rendered = render_ts_contract_type(type_ref);
+    if optional {
+        format!("{rendered} | null")
+    } else {
+        rendered
+    }
+}
+
 fn build_type_field_model(
     field: &SchemaFieldDefinition,
     extern_ts_map: &BTreeMap<String, String>,
@@ -1108,7 +1156,7 @@ fn build_type_field_model(
     TypeFieldModel {
         name: field.name.clone(),
         ts_type: field.type_ref.clone(),
-        rendered_ts_type: render_ts_contract_type(&field.type_ref),
+        rendered_ts_type: render_optional_ts_type(&field.type_ref, field.optional),
         rust_type: resolve_rust_type(&field.type_ref, extern_ts_map),
         optional: field.optional,
     }
@@ -1117,20 +1165,33 @@ fn build_type_field_model(
 fn build_type_model(
     type_def: &PackTypeDefinition,
     extern_ts_map: &BTreeMap<String, String>,
-) -> TypeModel {
+) -> Result<TypeModel, String> {
+    let mut names = BTreeMap::new();
     let variants = type_def
         .variants
         .iter()
-        .map(|value| TypeVariantModel {
-            value: value.clone(),
-            rust_ident: enum_variant_to_rust_ident(value),
+        .map(|value| {
+            let rust_ident = enum_variant_to_rust_ident(value);
+            if type_def.emit_rust {
+                if let Some(previous) = names.insert(rust_ident.clone(), value) {
+                    return Err(format!(
+                        "Enum '{}' variants '{}' and '{}' both generate Rust identifier '{}'",
+                        type_def.name, previous, value, rust_ident
+                    ));
+                }
+            }
+            Ok(TypeVariantModel {
+                value: value.clone(),
+                rust_literal: format!("{value:?}"),
+                rust_ident,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, String>>()?;
     let rust_target = type_def
         .target
         .as_ref()
         .map(|target| resolve_rust_type(target, extern_ts_map));
-    TypeModel {
+    Ok(TypeModel {
         name: type_def.name.clone(),
         kind: match type_def.kind {
             PackTypeKind::Object => "object",
@@ -1155,7 +1216,7 @@ fn build_type_model(
             .as_ref()
             .map(|target| render_ts_contract_type(target)),
         rust_target,
-    }
+    })
 }
 
 fn build_helper_model(
@@ -1168,7 +1229,7 @@ fn build_helper_model(
         .map(|param| HelperParamModel {
             name: param.name.clone(),
             ts_type: param.type_ref.clone(),
-            rendered_ts_type: render_ts_contract_type(&param.type_ref),
+            rendered_ts_type: render_optional_ts_type(&param.type_ref, param.optional),
             rust_type: resolve_rust_type(&param.type_ref, extern_ts_map),
             optional: param.optional,
         })
@@ -1197,7 +1258,7 @@ fn build_import_model(
         .map(|param| HelperParamModel {
             name: param.name.clone(),
             ts_type: param.type_ref.clone(),
-            rendered_ts_type: render_ts_contract_type(&param.type_ref),
+            rendered_ts_type: render_optional_ts_type(&param.type_ref, param.optional),
             rust_type: resolve_rust_type(&param.type_ref, extern_ts_map),
             optional: param.optional,
         })
@@ -1228,7 +1289,7 @@ fn build_filter_model(
         key,
         field,
         op: filter_op_to_str(op),
-        rendered_ts_type: render_ts_contract_type(&type_ref),
+        rendered_ts_type: render_optional_ts_type(&type_ref, optional),
         rust_type: resolve_rust_type(&type_ref, extern_ts_map),
         ts_type: type_ref,
         optional,
@@ -1302,6 +1363,29 @@ mod tests {
 
     fn compile_tracker(dsl: &str) -> tracen_ir::TrackerDefinition {
         tracen_dsl::compile(dsl).expect("compile tracker")
+    }
+
+    #[test]
+    fn enum_rust_identifier_collisions_are_actionable() {
+        let definition = compile_tracker(
+            r#"tracker "collision" v1 {
+            fields { amount: float }
+            types { type "Unit" {
+                kind = "enum"
+                variants = ["fl-oz", "fl_oz"]
+                emit_rust = true
+                contract = "domain"
+            } }
+        }"#,
+        );
+        let error = PackGenModel::from_tracker(&definition).unwrap_err();
+        assert!(
+            error.contains("Unit")
+                && error.contains("fl-oz")
+                && error.contains("fl_oz")
+                && error.contains("FlOz"),
+            "{error}"
+        );
     }
 
     #[test]

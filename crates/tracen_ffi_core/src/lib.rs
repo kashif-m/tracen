@@ -1,3 +1,4 @@
+pub mod event_store;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::json;

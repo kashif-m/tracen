@@ -1,0 +1,19 @@
+tracker "sleep" v1 {
+ fields {
+ day_bucket: int optional
+start: timestamp
+ end: timestamp
+ quality: int optional
+ }
+ validations {
+chronological = end > start
+ quality_range = quality == null || (quality >= 1 && quality <= 5)
+ }
+ derive {
+quantity = (end - start) / 3600000
+ }
+ metrics { total = sum(quantity) over all_time }
+ views { view "daily" {
+ config = {"query_type":"DailyQuery","response_type":"DailyResponse","result_kind":"metric_series","group_by":{"day":{"field":"day_bucket"}},"metrics":{"total":{"metric":"total","label":"Total"}}}
+ } }
+}

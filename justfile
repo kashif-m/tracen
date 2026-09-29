@@ -143,3 +143,11 @@ publish-all:
 	done
 
 release-check: check publish-dry-run
+
+# Compile generated fixture adapters and strictly type-check their TS contracts.
+conformance ts_compiler="tsc":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    generated_dir="$(pwd)/target/conformance-ts"
+    TRACEN_CONFORMANCE_TS_DIR="$generated_dir" cargo test --manifest-path crates/tracen_pack/tests/fixtures/generated-packs/Cargo.toml
+    "{{ts_compiler}}" --strict --noEmit --skipLibCheck --target ES2020 --moduleResolution node "$generated_dir"/*.ts

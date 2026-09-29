@@ -5,7 +5,7 @@ tracker "workout_tracker" v1 {
     calories: float
   }
 
-  derives {
+  derive {
     is_high = if calories > 300 then 1 else 0
   }
 

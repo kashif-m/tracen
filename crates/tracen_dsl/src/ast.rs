@@ -16,6 +16,8 @@ pub struct TrackerAst {
     pub derives: Vec<DeriveDefinition>,
     pub metrics: Vec<MetricDefinition>,
     pub alerts: Vec<AlertDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub validations: Vec<tracen_ir::ValidationDefinition>,
     pub planning: Option<PlanningDefinition>,
     pub event_plans: Option<EventPlansDefinition>,
     pub views: Vec<ViewDefinition>,

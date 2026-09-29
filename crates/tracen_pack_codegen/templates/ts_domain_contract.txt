@@ -8,6 +8,10 @@ import type {
 } from '{{module}}';
 {{/each}}
 
+{{#each default_identity_types}}
+export type {{this}} = string;
+{{/each}}
+
 export type DomainJsonValue =
   | null
   | boolean

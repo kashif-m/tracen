@@ -31,11 +31,11 @@ fn assert_snapshot(file: &str, actual: &str) {
 
 #[test]
 fn dsl_to_ir_snapshot() {
-    // Characterizes 0.1.x behavior: parser accepts `derives` block syntax today,
-    // but derives are not materialized into IR.
+    // The canonical derive section must produce IR; misspelled sections fail.
     let dsl = fs::read_to_string(fixture_path("workout_tracker.tracker")).expect("dsl fixture");
-    let actual = serde_json::to_string_pretty(&tracen_dsl::compile(&dsl).expect("compile fixture"))
-        .expect("serialize ir");
+    let definition = tracen_dsl::compile(&dsl).expect("compile fixture");
+    assert_eq!(definition.derives().len(), 1);
+    let actual = serde_json::to_string_pretty(&definition).expect("serialize ir");
 
     assert_snapshot("workout_tracker.ir.json", &actual);
 }

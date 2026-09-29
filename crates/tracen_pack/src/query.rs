@@ -167,7 +167,7 @@ pub(crate) fn parse_query_json(
             }
 
             let mut filters = query.filters;
-            validate_filter_map(&query.view, &config.filters, &mut filters)?;
+            validate_filter_map(definition, &query.view, &config.filters, &mut filters)?;
 
             Ok(PackExecutionPlan::View(ViewQueryPlan {
                 view_name: query.view,
@@ -186,7 +186,12 @@ pub(crate) fn parse_query_json(
                 })?;
 
             let mut params = query.params;
-            validate_param_map(&query.read_model, &read_model.params, &mut params)?;
+            validate_param_map(
+                definition,
+                &query.read_model,
+                &read_model.params,
+                &mut params,
+            )?;
 
             Ok(PackExecutionPlan::ReadModel(ReadModelQueryPlan {
                 read_model_name: query.read_model,
@@ -197,6 +202,7 @@ pub(crate) fn parse_query_json(
 }
 
 fn validate_filter_map(
+    definition: &TrackerDefinition,
     view_name: &str,
     declared: &BTreeMap<String, RuntimeFilterConfig>,
     filters: &mut BTreeMap<String, Value>,
@@ -211,10 +217,16 @@ fn validate_filter_map(
     }
 
     for (key, config) in declared {
+        if config.optional && filters.get(key).is_some_and(Value::is_null) {
+            filters.remove(key);
+        }
         match filters.get(key) {
-            Some(value) => {
-                validate_type_ref(&config.type_ref, value, &format!("filter '{}'", key))?
-            }
+            Some(value) => validate_type_ref(
+                definition,
+                &config.type_ref,
+                value,
+                &format!("filter '{}'", key),
+            )?,
             None if !config.optional => {
                 return Err(PackError::InvalidQuery(format!(
                     "required filter '{}' is missing for view '{}'",
@@ -232,6 +244,7 @@ fn default_filter_op() -> String {
 }
 
 fn validate_param_map(
+    definition: &TrackerDefinition,
     read_model_name: &str,
     declared: &[tracen_ir::SchemaFieldDefinition],
     params: &mut BTreeMap<String, Value>,
@@ -251,10 +264,16 @@ fn validate_param_map(
     }
 
     for field in declared {
+        if field.optional && params.get(&field.name).is_some_and(Value::is_null) {
+            params.remove(&field.name);
+        }
         match params.get(&field.name) {
-            Some(value) => {
-                validate_type_ref(&field.type_ref, value, &format!("param '{}'", field.name))?
-            }
+            Some(value) => validate_type_ref(
+                definition,
+                &field.type_ref,
+                value,
+                &format!("param '{}'", field.name),
+            )?,
             None if !field.optional => {
                 return Err(PackError::InvalidQuery(format!(
                     "required param '{}' is missing for read_model '{}'",
@@ -267,39 +286,132 @@ fn validate_param_map(
     Ok(())
 }
 
-fn validate_type_ref(type_ref: &str, value: &Value, context: &str) -> Result<(), PackError> {
-    let valid = match type_ref.trim() {
-        "string" => value.is_string(),
-        "number" => value.is_number(),
-        "int" => value.as_i64().is_some(),
-        "float" => value.as_f64().is_some(),
-        "boolean" => value.is_boolean(),
-        "string[]" => value
-            .as_array()
-            .is_some_and(|items| items.iter().all(Value::is_string)),
-        "number[]" => value
-            .as_array()
-            .is_some_and(|items| items.iter().all(Value::is_number)),
-        "int[]" => value
-            .as_array()
-            .is_some_and(|items| items.iter().all(|item| item.as_i64().is_some())),
-        "float[]" => value
-            .as_array()
-            .is_some_and(|items| items.iter().all(|item| item.as_f64().is_some())),
-        "boolean[]" => value
-            .as_array()
-            .is_some_and(|items| items.iter().all(Value::is_boolean)),
-        "json" | "unknown" => true,
-        "json[]" | "unknown[]" => value.as_array().is_some(),
-        _ => true,
-    };
-
-    if valid {
+fn validate_type_ref(
+    definition: &TrackerDefinition,
+    type_ref: &str,
+    value: &Value,
+    context: &str,
+) -> Result<(), PackError> {
+    if matches_type_ref(definition, type_ref, value, 0) {
         Ok(())
     } else {
         Err(PackError::InvalidQuery(format!(
             "{context} does not match declared type '{}'",
             type_ref
         )))
+    }
+}
+
+fn matches_type_ref(
+    definition: &TrackerDefinition,
+    type_ref: &str,
+    value: &Value,
+    depth: usize,
+) -> bool {
+    // Bound recursive aliases/objects independently of untrusted input size.
+    if depth > 64 {
+        return false;
+    }
+    let type_ref = type_ref.trim();
+    if let Some(inner) = type_ref.strip_suffix("[]") {
+        return value.as_array().is_some_and(|items| {
+            items
+                .iter()
+                .all(|item| matches_type_ref(definition, inner, item, depth + 1))
+        });
+    }
+    match type_ref {
+        "string" | "text" => value.is_string(),
+        "number" | "float" => value.as_f64().is_some(),
+        "int" => value.as_i64().is_some(),
+        "bool" | "boolean" => value.is_boolean(),
+        "json" | "unknown" | "any" => true,
+        "null" => value.is_null(),
+        _ => match definition.types().iter().find(|ty| ty.name == type_ref) {
+            Some(ty) => match ty.kind {
+                tracen_ir::PackTypeKind::Enum => value
+                    .as_str()
+                    .is_some_and(|item| ty.variants.iter().any(|variant| variant == item)),
+                tracen_ir::PackTypeKind::Alias => ty
+                    .target
+                    .as_ref()
+                    .is_some_and(|target| matches_type_ref(definition, target, value, depth + 1)),
+                tracen_ir::PackTypeKind::Object => value.as_object().is_some_and(|object| {
+                    ty.fields.iter().all(|field| match object.get(&field.name) {
+                        None => field.optional,
+                        Some(value) if value.is_null() && field.optional => true,
+                        Some(value) => {
+                            matches_type_ref(definition, &field.type_ref, value, depth + 1)
+                        }
+                    })
+                }),
+            },
+            // Extern types and opaque TS expressions are checked by the typed adapter.
+            None => true,
+        },
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn definition() -> TrackerDefinition {
+        tracen_dsl::compile(r#"
+tracker "hydration" v1 {
+  fields { amount: float }
+  types {
+    type "Unit" {
+      kind = "enum"
+      variants = ["ml", "oz"]
+      emit_rust = true
+    }
+    type "Filter" {
+      fields = {"unit":{"type":"Unit"},"limit":{"type":"int","optional":true}}
+      emit_rust = true
+    }
+  }
+  read_models {
+    read_model "history" {
+      params = {"label":{"type":"text","optional":true},"enabled":{"type":"bool","optional":true},"filter":{"type":"Filter","optional":true},"units":{"type":"Unit[]","optional":true}}
+      fields = {"count":{"type":"int"}}
+    }
+  }
+}
+"#).expect("valid definition")
+    }
+
+    #[test]
+    fn query_contract_rejects_invalid_aliases_and_named_values() {
+        let def = definition();
+        for params in [
+            json!({"label":42}),
+            json!({"enabled":"yes"}),
+            json!({"filter":{"unit":"litres"}}),
+            json!({"filter":{}}),
+            json!({"filter":{"unit":"ml","limit":1.5}}),
+            json!({"units":["ml",42]}),
+        ] {
+            let mut query = params;
+            query["read_model"] = json!("history");
+            assert!(
+                parse_query_json(&def, &query.to_string()).is_err(),
+                "accepted {query}"
+            );
+        }
+    }
+
+    #[test]
+    fn optional_query_null_matches_omission_and_accepts_valid_named_values() {
+        let def = definition();
+        let absent = parse_query_json(&def, r#"{"read_model":"history"}"#).unwrap();
+        let null = parse_query_json(
+            &def,
+            r#"{"read_model":"history","label":null,"enabled":null,"filter":null,"units":null}"#,
+        )
+        .unwrap();
+        assert_eq!(absent, null);
+        parse_query_json(&def, r#"{"read_model":"history","label":"water","enabled":true,"filter":{"unit":"ml","limit":null},"units":["ml","oz"]}"#).unwrap();
     }
 }

@@ -729,6 +729,9 @@ fn runtime_legacy_fallback_matches_native_for_views() {
 #[test]
 fn runtime_applies_runtime_time_semantics_to_events() {
     let events = vec![PackInputEvent {
+        event_id: None,
+        tracker_id: None,
+        meta: Value::Null,
         ts: 1_710_000_000_000,
         payload: serde_json::json!({
             "day_bucket": 1,
@@ -783,10 +786,16 @@ fn prepare_pack_query_allows_legacy_events_missing_required_fields() {
     let runtime = PackRuntime::new(compiled, StubAdapter);
     let events = vec![
         PackInputEvent {
+            event_id: None,
+            tracker_id: None,
+            meta: Value::Null,
             ts: 1_710_000_000_001,
             payload: json!({ "score": 10 }),
         },
         PackInputEvent {
+            event_id: None,
+            tracker_id: None,
+            meta: Value::Null,
             ts: 1_710_000_000_002,
             payload: json!({}),
         },
@@ -813,4 +822,198 @@ fn prepare_pack_query_allows_legacy_events_missing_required_fields() {
         None
     );
     assert_eq!(prepared.len(), 2);
+}
+
+#[test]
+fn pack_preparation_preserves_envelopes_and_metadata_expressions() {
+    let definition = tracen_engine::compile_tracker(
+        r#"tracker "sample" v1 {
+        fields { amount: float }
+        derive { adjusted = amount * meta.multiplier }
+    }"#,
+    )
+    .unwrap();
+    let source = serde_json::json!({
+        "event_id":"stable-id", "tracker_id":definition.tracker_id().as_str(), "ts":1710000000000_i64,
+        "payload":{"amount":3}, "meta":{"multiplier":2,"source":"import","nested":{"note":"keep"}}
+    });
+    let input: PackInputEvent = serde_json::from_value(source.clone()).unwrap();
+    let prepared = super::runtime_events::prepare_pack_events(&definition, &[input]).unwrap();
+    let timed = super::apply_runtime_time_semantics(&prepared, 330);
+    let output = serde_json::to_value(&timed[0]).unwrap();
+    for field in ["event_id", "tracker_id", "ts", "meta"] {
+        assert_eq!(output[field], source[field], "lost {field}");
+    }
+    assert_eq!(output["payload"]["adjusted"], 6.0);
+    let legacy: PackInputEvent =
+        serde_json::from_value(serde_json::json!({"ts":1,"payload":{"amount":3}})).unwrap();
+    assert!(legacy.event_id.is_none());
+    assert!(legacy.meta.is_null());
+}
+
+#[test]
+fn non_workout_packs_share_validation_reload_and_aggregation_contracts() {
+    for (dsl, payloads, invalid, expected) in [
+        (
+            include_str!("../tests/fixtures/hydration.tracker"),
+            vec![
+                json!({"amount_ml":250,"notes":"water"}),
+                json!({"amount_ml":500,"notes":null}),
+            ],
+            vec![
+                json!({}),
+                json!({"amount_ml":0}),
+                json!({"amount_ml":"250"}),
+            ],
+            0.75,
+        ),
+        (
+            include_str!("../tests/fixtures/sleep.tracker"),
+            vec![
+                json!({"start":82800000,"end":111600000,"quality":5}),
+                json!({"start":169200000,"end":196200000}),
+            ],
+            vec![
+                json!({"start":200,"end":100}),
+                json!({"start":100,"end":200,"quality":6}),
+            ],
+            15.5,
+        ),
+    ] {
+        let dir = tempdir().unwrap();
+        let dsl_path = dir.path().join("tracker.tracker");
+        fs::write(&dsl_path, dsl).unwrap();
+        let built = build(&PackBuildConfig {
+            dsl_path,
+            out_dir: dir.path().join("rust"),
+            generated_ts_dir: dir.path().join("ts"),
+            base_source_paths: BTreeMap::new(),
+        })
+        .unwrap();
+        for path in [
+            built.rust_artifact_path,
+            built.api_contract_path,
+            built.domain_contract_path,
+        ] {
+            assert!(!fs::read_to_string(path).unwrap().is_empty());
+        }
+        let runtime = PackRuntime::new(CompiledPack::compile(dsl).unwrap(), PanicAdapter);
+        let accepted: Vec<Value> = payloads
+            .into_iter()
+            .enumerate()
+            .map(|(i, payload)| {
+                runtime
+                    .validate_pack_event(
+                        &json!({"event_id":format!("event-{i}"),"ts":i as i64*86400000,
+                "payload":payload,"meta":{"source":"conformance","nested":{"retain":true}}})
+                        .to_string(),
+                    )
+                    .unwrap()
+            })
+            .collect();
+        for payload in invalid {
+            assert!(runtime
+                .validate_pack_event(
+                    &json!({"event_id":"bad","ts":0,"payload":payload}).to_string()
+                )
+                .is_err());
+        }
+        let serialized = serde_json::to_string(&accepted).unwrap();
+        let prepared = runtime.prepare_events_json(&serialized).unwrap();
+        let reloaded = runtime
+            .prepare_events_json(&serde_json::to_string(&prepared).unwrap())
+            .unwrap();
+        for (i, event) in reloaded.iter().enumerate() {
+            assert_eq!(
+                event.event_id.as_deref(),
+                Some(format!("event-{i}").as_str())
+            );
+            assert_eq!(event.meta, accepted[i]["meta"]);
+            assert_eq!(
+                event.tracker_id.as_deref(),
+                accepted[i]["tracker_id"].as_str()
+            );
+        }
+        let query = r#"{"view":"daily","metric":"total","group_by":"day"}"#;
+        let result = runtime.pack_query(&prepared, 0, &json!([]), query).unwrap();
+        assert_eq!(
+            result,
+            runtime.pack_query(&reloaded, 0, &json!([]), query).unwrap()
+        );
+        let total: f64 = result["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["value"].as_f64().unwrap())
+            .sum();
+        assert_eq!(total, expected, "{result}");
+        assert!(runtime
+            .parse_query_json(r#"{"view":"daily","metric":"total","group_by":42}"#)
+            .is_err());
+        assert!(runtime
+            .parse_query_json(r#"{"view":"daily","metric":"missing","group_by":"day"}"#)
+            .is_err());
+    }
+}
+
+#[test]
+fn generic_views_preserve_event_identity_and_metadata() {
+    for (target, expected) in [
+        ("distinct_count(meta.source)", json!(2.0)),
+        (
+            "sum(if (event.id == \"source-a\") then 1 else 0)",
+            json!(1.0),
+        ),
+    ] {
+        let dsl = sample_dsl().replace("count() over all_time", &format!("{target} over all_time"));
+        let runtime = PackRuntime::new(CompiledPack::compile(&dsl).unwrap(), PanicAdapter);
+        let events = runtime
+            .prepare_events_json(
+                r#"[
+            {"event_id":"source-a","ts":1,"payload":{"category":"a"},"meta":{"source":"one"}},
+            {"event_id":"source-b","ts":2,"payload":{"category":"a"},"meta":{"source":"two"}}
+        ]"#,
+            )
+            .unwrap();
+        let result = runtime
+            .pack_query(
+                &events,
+                0,
+                &json!([]),
+                r#"{"view":"category_dist","metric":"total_sets","group_by":"category"}"#,
+            )
+            .unwrap();
+        assert_eq!(result["items"][0]["value"], expected, "{target}: {result}");
+    }
+}
+
+#[test]
+fn pack_routes_reject_invalid_envelopes() {
+    let runtime = PackRuntime::new(CompiledPack::compile(sample_dsl()).unwrap(), PanicAdapter);
+    for override_fields in [
+        json!({"tracker_id":"different-tracker"}),
+        json!({"event_id":"  "}),
+        json!({"meta":[]}),
+        json!({"payload":42}),
+    ] {
+        let mut event = json!({"event_id":"valid","ts":1,"payload":{"category":"a"}});
+        event
+            .as_object_mut()
+            .unwrap()
+            .extend(override_fields.as_object().unwrap().clone());
+        let input = json!([event]).to_string();
+        assert!(runtime.prepare_events_json(&input).is_err(), "{input}");
+        let events: Vec<PackInputEvent> = serde_json::from_str(&input).unwrap();
+        assert!(
+            runtime
+                .pack_query(
+                    &events,
+                    0,
+                    &json!([]),
+                    r#"{"view":"category_dist","metric":"total_sets","group_by":"category"}"#
+                )
+                .is_err(),
+            "{input}"
+        );
+    }
 }

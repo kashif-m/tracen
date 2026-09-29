@@ -1,0 +1,31 @@
+tracker "hydration" v1 {
+ fields {
+ day_bucket: int optional
+amount_ml: float
+ notes: text optional
+ }
+ validations {
+amount_range = amount_ml > 0 && amount_ml <= 10000
+ }
+ derive {
+quantity = amount_ml / 1000
+ }
+ metrics { total = sum(quantity) over all_time }
+ views { view "daily" {
+ config = {"query_type":"DailyQuery","response_type":"DailyResponse","result_kind":"metric_series","group_by":{"day":{"field":"day_bucket"}},"metrics":{"total":{"metric":"total","label":"Total"}}}
+ } }
+ types {
+  type "Unit" {
+   kind = "enum"
+   variants = ["fl-oz", "metric_ml", "MixedCase"]
+   emit_rust = true
+   contract = "domain"
+  }
+ }
+ read_models {
+  read_model "unit_echo" {
+   params = {"unit":{"type":"Unit"}}
+   fields = {"unit":{"type":"Unit"}}
+  }
+ }
+}

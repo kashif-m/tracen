@@ -9,6 +9,10 @@ import type {
 {{/each}}
 import type { {{tracker_type}}PackCapabilities } from './{{core_domain_contract_module}}';
 
+{{#each default_identity_types}}
+export type {{this}} = string;
+{{/each}}
+
 export type DomainJsonValue =
   | null
   | boolean

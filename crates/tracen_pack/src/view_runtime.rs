@@ -420,11 +420,20 @@ fn pack_events_for_engine(
             }
 
             Ok(NormalizedEvent::new(
-                EventId::new(format!("view-{index}-{}", event.ts)),
+                EventId::new(
+                    event
+                        .event_id
+                        .clone()
+                        .unwrap_or_else(|| format!("pack-{index}-{}", event.ts)),
+                ),
                 definition.tracker_id().clone(),
                 Timestamp::new(event.ts),
                 payload,
-                serde_json::json!({}),
+                if event.meta.is_null() {
+                    serde_json::json!({})
+                } else {
+                    event.meta.clone()
+                },
             ))
         })
         .collect()

@@ -197,6 +197,9 @@ where
         query_json: &str,
     ) -> Result<Value, PackError> {
         let plan = self.parse_query_json(query_json)?;
+        for event in events {
+            runtime_events::validate_pack_event_envelope(self.compiled.definition(), event)?;
+        }
         let normalized_events = apply_runtime_time_semantics(events, offset_minutes);
         let result = if self.options.use_legacy_adapter_for_queries {
             self.adapter

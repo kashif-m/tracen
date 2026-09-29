@@ -3,6 +3,9 @@
 //! The goal is to expose pure functions that can be called from native or JS runtimes through FFI.
 
 mod event_intake;
+mod state;
+
+pub use state::{restore_state, EngineState};
 
 use event_intake::{build_pack_event, parse_event_from_json};
 use serde::Deserialize;
@@ -15,9 +18,9 @@ use tracen_eval::{
 };
 use tracen_ir::{
     metric_delta, schema_validation::PayloadValidationPolicy, AlertDefinition, BinaryOperator,
-    ComparisonOperator, Condition, EngineOutput, EngineOutputDelta, EngineState, EventId,
-    Expression, GroupByDimension, MetricDefinition, NormalizedEvent, Query, SimulationOutput,
-    TimeGrain, TimeWindow, Timestamp, TrackerDefinition, TrackerId,
+    ComparisonOperator, Condition, EngineOutput, EngineOutputDelta, EventId, Expression,
+    GroupByDimension, MetricDefinition, NormalizedEvent, Query, SimulationOutput, TimeGrain,
+    TimeWindow, Timestamp, TrackerDefinition, TrackerId,
 };
 
 /// Engine-level error codes surfaced across FFI boundaries.
@@ -91,14 +94,16 @@ pub fn validate_event(
 }
 
 /// Compiles compute-time metric plan and validates definitions once.
-pub fn compile_compute_plan(def: &TrackerDefinition) -> Result<ComputePlan, EngineError> {
+pub fn compile_compute_plan(def: &TrackerDefinition) -> Result<ComputePlan<'_>, EngineError> {
     Ok(ComputePlan {
+        definition: def,
         metric_specs: compile_metric_specs(def.metrics())?,
     })
 }
 
 #[derive(Clone, Debug)]
-pub struct ComputePlan {
+pub struct ComputePlan<'a> {
+    definition: &'a TrackerDefinition,
     metric_specs: Vec<MetricSpec>,
 }
 
@@ -120,11 +125,53 @@ pub fn compute(
 /// 2) `prepare_events_for_compute` once per immutable batch
 /// 3) call `compute_with_prepared_events` / `compute_metric_by_name_with_prepared_events`
 ///    repeatedly without recomputing derives.
-pub fn prepare_events_for_compute(
-    def: &TrackerDefinition,
+pub fn prepare_events_for_compute<'a>(
+    def: &'a TrackerDefinition,
     events: &[NormalizedEvent],
-) -> Result<Vec<NormalizedEvent>, EngineError> {
-    prepare_events(def, events)
+) -> Result<PreparedEvents<'a>, EngineError> {
+    Ok(PreparedEvents {
+        definition: def,
+        events: prepare_events(def, events)?,
+    })
+}
+
+/// Read-only derived events bound to their source definition. Preparation is a
+/// read operation, not write acceptance: producers must still validate writes.
+/// Raw event slices cannot be passed as prepared batches, and derived values
+/// cannot be edited through this container.
+///
+/// ```compile_fail
+/// use tracen_engine::{compile_tracker, prepare_events_for_compute};
+/// let def = compile_tracker("tracker \"sample\" v1 { fields { amount: float } }").unwrap();
+/// let mut batch = prepare_events_for_compute(&def, &[]).unwrap();
+/// batch[0].payload_mut()["amount"] = serde_json::json!(42);
+/// ```
+///
+/// ```compile_fail
+/// let batch: tracen_engine::PreparedEvents<'_> = serde_json::from_str("[]").unwrap();
+/// ```
+#[derive(Clone, Debug)]
+pub struct PreparedEvents<'a> {
+    definition: &'a TrackerDefinition,
+    events: Vec<NormalizedEvent>,
+}
+
+impl std::ops::Deref for PreparedEvents<'_> {
+    type Target = [NormalizedEvent];
+
+    fn deref(&self) -> &Self::Target {
+        &self.events
+    }
+}
+
+fn ensure_prepared(def: &TrackerDefinition, batch: &PreparedEvents<'_>) -> Result<(), EngineError> {
+    ensure_tracker(def, batch.definition.tracker_id())?;
+    if !std::ptr::eq(def, batch.definition) && def != batch.definition {
+        return Err(EngineError::Evaluation(
+            "events were prepared for a different tracker definition".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Builds a normalized event for pack-style inputs without full event JSON parsing.
@@ -134,17 +181,40 @@ pub fn prepare_pack_event(
     ts: i64,
     payload: Value,
 ) -> Result<NormalizedEvent, EngineError> {
-    build_pack_event(def, EventId::new(event_id), Timestamp::new(ts), payload)
+    prepare_pack_event_with_metadata(def, event_id, ts, payload, json!({}))
+}
+
+/// Prepare a read-only pack event while retaining metadata used by expressions.
+pub fn prepare_pack_event_with_metadata(
+    def: &TrackerDefinition,
+    event_id: &str,
+    ts: i64,
+    payload: Value,
+    meta: Value,
+) -> Result<NormalizedEvent, EngineError> {
+    build_pack_event(
+        def,
+        EventId::new(event_id),
+        Timestamp::new(ts),
+        payload,
+        meta,
+    )
 }
 
 /// Execute a previously prepared compute plan against an already prepared event slice.
 pub fn compute_with_plan(
     def: &TrackerDefinition,
-    plan: &ComputePlan,
-    prepared_events: &[NormalizedEvent],
+    plan: &ComputePlan<'_>,
+    prepared_events: &PreparedEvents<'_>,
     query: Query,
 ) -> Result<EngineOutput, EngineError> {
-    ensure_events(def, prepared_events)?;
+    ensure_tracker(def, plan.definition.tracker_id())?;
+    if !std::ptr::eq(def, plan.definition) && def != plan.definition {
+        return Err(EngineError::Evaluation(
+            "compute plan was compiled for a different tracker definition".into(),
+        ));
+    }
+    ensure_prepared(def, prepared_events)?;
 
     let constraints = QueryConstraints::from_query(&query);
     let total_events = prepared_events.len();
@@ -178,7 +248,7 @@ pub fn compute_with_plan(
 /// This avoids reapplying derives when callers supply pre-derived payloads.
 pub fn compute_with_prepared_events(
     def: &TrackerDefinition,
-    prepared_events: &[NormalizedEvent],
+    prepared_events: &PreparedEvents<'_>,
     query: Query,
 ) -> Result<EngineOutput, EngineError> {
     let plan = compile_compute_plan(def)?;
@@ -188,11 +258,14 @@ pub fn compute_with_prepared_events(
 /// Applies a new normalized event to the engine state and returns metric deltas.
 pub fn apply(
     def: &TrackerDefinition,
-    state: &mut EngineState,
+    state: &mut EngineState<'_>,
     mut event: NormalizedEvent,
 ) -> Result<EngineOutputDelta, EngineError> {
     ensure_tracker(def, event.tracker_id())?;
     ensure_state(def, state)?;
+    // A public NormalizedEvent can be constructed or mutated after validation.
+    // Enforce acceptance immediately before the state mutation.
+    event_intake::validate_normalized_event(def, &mut event, PayloadValidationPolicy::Event)?;
     let prev_total = state.total_events() as isize;
     apply_derives(def, &mut event)?;
     let ts = event.ts().as_millis();
@@ -231,7 +304,7 @@ pub fn simulate(
     let plan = compile_compute_plan(def)?;
 
     let mut future = base_prepared.clone();
-    future.extend_from_slice(&hypothetical_prepared);
+    future.events.extend_from_slice(&hypothetical_prepared);
 
     let base_output = compute_with_plan(def, &plan, &base_prepared, query.clone())?;
     let hypothetical_output = compute_with_plan(def, &plan, &future, query)?;
@@ -323,6 +396,7 @@ pub fn compute_view_metric(
             "min" => EvalAggregationFunc::Min,
             "avg" => EvalAggregationFunc::Avg,
             "count" => EvalAggregationFunc::Count,
+            "distinct_count" => EvalAggregationFunc::DistinctCount,
             other => Err(EngineError::Evaluation(format!(
                 "unsupported aggregation '{}'",
                 other
@@ -353,6 +427,7 @@ pub fn compute_view_metric(
         let spec = MetricSpec {
             name: MetricName::new(format!("{}_{}", view_name, metric_key)),
             aggregation: AggregationSpec {
+                weight: None,
                 func,
                 target,
                 filter: None,
@@ -382,11 +457,11 @@ pub fn compute_metric_by_name(
 /// Compute a metric by name from already prepared events.
 pub fn compute_metric_by_name_with_prepared_events(
     def: &TrackerDefinition,
-    prepared_events: &[NormalizedEvent],
+    prepared_events: &PreparedEvents<'_>,
     metric_name: &str,
     options: MetricComputeOptions,
 ) -> Result<Value, EngineError> {
-    ensure_events(def, prepared_events)?;
+    ensure_prepared(def, prepared_events)?;
     let metric = def
         .metrics()
         .iter()
@@ -436,12 +511,17 @@ fn ensure_tracker(def: &TrackerDefinition, tracker_id: &TrackerId) -> Result<(),
     Ok(())
 }
 
-fn ensure_state(def: &TrackerDefinition, state: &EngineState) -> Result<(), EngineError> {
+fn ensure_state(def: &TrackerDefinition, state: &EngineState<'_>) -> Result<(), EngineError> {
     if state.tracker_id() != def.tracker_id() {
         Err(EngineError::StateMismatch {
             expected: def.tracker_id().clone(),
             actual: state.tracker_id().clone(),
         })?;
+    }
+    if !std::ptr::eq(def, state.definition()) && def != state.definition() {
+        return Err(EngineError::Evaluation(
+            "state was created for a different tracker definition".into(),
+        ));
     }
     Ok(())
 }
@@ -486,6 +566,8 @@ fn compile_metric_spec(
         tracen_ir::AggregationFunc::Min => EvalAggregationFunc::Min,
         tracen_ir::AggregationFunc::Avg => EvalAggregationFunc::Avg,
         tracen_ir::AggregationFunc::Count => EvalAggregationFunc::Count,
+        tracen_ir::AggregationFunc::DistinctCount => EvalAggregationFunc::DistinctCount,
+        tracen_ir::AggregationFunc::WeightedAvg => EvalAggregationFunc::WeightedAvg,
     };
 
     let target = metric
@@ -517,6 +599,12 @@ fn compile_metric_spec(
     Ok(MetricSpec {
         name: MetricName::new(metric.name.clone()),
         aggregation: AggregationSpec {
+            weight: metric
+                .aggregation
+                .weight
+                .as_ref()
+                .map(to_scalar_expr)
+                .transpose()?,
             func,
             target,
             filter: None,
@@ -606,6 +694,9 @@ fn eval_expression(
     derived: &BTreeMap<String, Value>,
 ) -> Result<Value, EngineError> {
     match expr {
+        Expression::Number(v) if !v.is_finite() => {
+            Err(EngineError::Evaluation("non-finite numeric value".into()))
+        }
         Expression::Number(v) => Ok(json!(v)),
         Expression::Int(v) => Ok(json!(v)),
         Expression::Bool(v) => Ok(json!(v)),
@@ -635,6 +726,11 @@ fn eval_expression(
                 }
                 BinaryOperator::Mod => lhs_num % rhs_num,
             };
+            if !result.is_finite() {
+                return Err(EngineError::Evaluation(
+                    "non-finite arithmetic result".into(),
+                ));
+            }
             Ok(json!(result))
         }
         Expression::Conditional {
@@ -704,14 +800,41 @@ fn eval_condition(
             let lhs = eval_expression(left, event, derived)?;
             let rhs = eval_expression(right, event, derived)?;
             match op {
-                ComparisonOperator::Eq => Ok(lhs == rhs),
-                ComparisonOperator::Neq => Ok(lhs != rhs),
+                ComparisonOperator::Eq => Ok(values_equal(&lhs, &rhs)),
+                ComparisonOperator::Neq => Ok(!values_equal(&lhs, &rhs)),
                 ComparisonOperator::Gt => compare_number(lhs, rhs, |a, b| a > b),
                 ComparisonOperator::Gte => compare_number(lhs, rhs, |a, b| a >= b),
                 ComparisonOperator::Lt => compare_number(lhs, rhs, |a, b| a < b),
                 ComparisonOperator::Lte => compare_number(lhs, rhs, |a, b| a <= b),
             }
         }
+    }
+}
+
+// JSON retains integer and floating representations. Equality must compare their
+// values without rounding distinct 64-bit integers through f64.
+fn values_equal(lhs: &Value, rhs: &Value) -> bool {
+    fn integer(number: &serde_json::Number) -> Option<i128> {
+        number
+            .as_i64()
+            .map(i128::from)
+            .or_else(|| number.as_u64().map(i128::from))
+    }
+    fn float_integer(float: f64, integer: i128) -> bool {
+        float.is_finite()
+            && float.fract() == 0.0
+            && float >= i64::MIN as f64
+            && float < 18_446_744_073_709_551_616.0
+            && float as i128 == integer
+    }
+    match (lhs, rhs) {
+        (Value::Number(a), Value::Number(b)) => match (integer(a), integer(b)) {
+            (Some(a), Some(b)) => a == b,
+            (Some(a), None) => b.as_f64().is_some_and(|b| float_integer(b, a)),
+            (None, Some(b)) => a.as_f64().is_some_and(|a| float_integer(a, b)),
+            (None, None) => a.as_f64() == b.as_f64(),
+        },
+        _ => lhs == rhs,
     }
 }
 
@@ -779,7 +902,7 @@ fn to_scalar_expr(expr: &Expression) -> Result<ScalarExpr, EngineError> {
         Expression::Int(v) => ScalarExpr::Number(*v as f64),
         Expression::Bool(v) => ScalarExpr::Bool(*v),
         Expression::Text(v) => ScalarExpr::String(v.clone()),
-        Expression::Null => ScalarExpr::Number(0.0),
+        Expression::Null => ScalarExpr::Null,
         Expression::Field(path) => ScalarExpr::Field(FieldPath::new(normalize_field_path(path))),
         Expression::Binary { op, left, right } => {
             let mapped = match op {
@@ -892,6 +1015,68 @@ mod tests {
     }
 
     #[test]
+    fn non_finite_calculations_fail_instead_of_becoming_null() {
+        for expression in ["value_a % 0", "value_a * value_a"] {
+            let def = compile_tracker(&format!(
+                "tracker \"finite\" v1 {{ fields {{ value_a: float }} derive {{ result = {expression} }} }}"
+            )).unwrap();
+            let event = NormalizedEvent::new(
+                EventId::new("overflow"),
+                def.tracker_id().clone(),
+                Timestamp::new(0),
+                json!({"value_a": 1e308}),
+                json!({}),
+            );
+            let mut state = EngineState::for_definition(&def);
+            assert!(
+                apply(&def, &mut state, event.clone()).is_err(),
+                "{expression}"
+            );
+            assert_eq!(state.total_events(), 0);
+            assert!(
+                prepare_events_for_compute(&def, &[event]).is_err(),
+                "{expression}"
+            );
+        }
+        for metric in ["sum(value_a * value_a)", "sum(value_a)"] {
+            let def = compile_tracker(&format!(
+                "tracker \"finite\" v1 {{ fields {{ value_a: float }} metrics {{ total = {metric} over all_time }} }}"
+            )).unwrap();
+            let events: Vec<_> = (0..2)
+                .map(|i| {
+                    NormalizedEvent::new(
+                        EventId::new(format!("e{i}")),
+                        def.tracker_id().clone(),
+                        Timestamp::new(i),
+                        json!({"value_a": 1e308}),
+                        json!({}),
+                    )
+                })
+                .collect();
+            assert!(
+                compute(&def, &events, Query::default()).is_err(),
+                "{metric}"
+            );
+        }
+        let def = compile_tracker("tracker \"finite\" v1 { fields { value_a: float } metrics { largest = max(value_a) over all_time } }").unwrap();
+        let events: Vec<_> = (0..2)
+            .map(|i| {
+                NormalizedEvent::new(
+                    EventId::new(format!("e{i}")),
+                    def.tracker_id().clone(),
+                    Timestamp::new(i),
+                    json!({"value_a": 1e308}),
+                    json!({}),
+                )
+            })
+            .collect();
+        assert_eq!(
+            compute(&def, &events, Query::default()).unwrap().metrics["largest"],
+            json!(1e308)
+        );
+    }
+
+    #[test]
     fn compute_ir_metric() {
         let def = sample_definition();
         let events = vec![
@@ -920,6 +1105,27 @@ mod tests {
             r#"{"event_id":"e1","ts":1,"payload":{"value_a":1,"unknown":"x"}}"#,
         );
         assert!(event.is_err());
+    }
+
+    #[test]
+    fn event_alerts_evaluate_derived_signal_payloads() {
+        let def = compile_tracker(
+            r#"tracker "signals" v1 {
+            fields { amount: float }
+            derive { doubled = amount * 2 }
+            alerts { warning = if payload.doubled > 8 then signal("HIGH", doubled) else null }
+        }"#,
+        )
+        .unwrap();
+        let event =
+            validate_event(&def, r#"{"event_id":"high","ts":1,"payload":{"amount":5}}"#).unwrap();
+        let output = compute(&def, &[event], Query::default()).unwrap();
+        assert_eq!(
+            output.alerts,
+            vec![
+                json!({"alert":"warning", "event_id":"high", "value":{"type":"HIGH", "payload":10.0}})
+            ]
+        );
     }
 
     #[test]
@@ -1132,5 +1338,51 @@ mod tests {
         )
         .expect("direct metric");
         assert_eq!(by_name, by_name_direct);
+    }
+}
+
+#[cfg(test)]
+mod equality_regression {
+    use super::*;
+    #[test]
+    fn numeric_equality_keeps_large_integers_exact() {
+        for (a, b, equal) in [
+            (json!(0), json!(-0.0), true),
+            (json!(500u64), json!(500.0), true),
+            (json!(9007199254740993u64), json!(9007199254740992.0), false),
+            (
+                json!(9007199254740992u64),
+                json!(9007199254740993u64),
+                false,
+            ),
+            (json!(i64::MIN), json!(i64::MIN as f64), true),
+            (json!(i64::MAX), json!(i64::MAX as f64), false),
+            (json!(u64::MAX), json!(u64::MAX as f64), false),
+            (json!(-1), json!(u64::MAX), false),
+            (json!(1), json!(1.5), false),
+            (json!(null), json!(null), true),
+            (json!(false), json!(0), false),
+            (json!("0"), json!(0), false),
+        ] {
+            assert_eq!(values_equal(&a, &b), equal, "{a} vs {b}");
+            assert_eq!(values_equal(&b, &a), equal);
+        }
+    }
+    #[test]
+    fn acceptance_numeric_spelling_and_exact_integer_boundaries() {
+        for (rule, value, accepted) in [
+            ("value_a != 0", json!(0), false),
+            ("value_a != 0", json!(0.0), false),
+            ("value_a == 500.0", json!(500), true),
+            ("value_a * 2 == 1000", json!(500), true),
+        ] {
+            let dsl = format!("tracker \"equality\" v1 {{ fields {{ value_a: float }} validations {{ exact = {rule} }} }}");
+            let definition = compile_tracker(&dsl).unwrap();
+            let result = validate_event(
+                &definition,
+                &json!({"event_id":"one","ts":0,"payload":{"value_a":value}}).to_string(),
+            );
+            assert_eq!(result.is_ok(), accepted, "{rule}: {value}");
+        }
     }
 }
